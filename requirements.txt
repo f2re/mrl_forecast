@@ -1,6 +1,6 @@
 torch
 torchvision
-numpy
+numpy<2.0
 flask
 matplotlib
 pandas
@@ -10,3 +10,5 @@ eccodes
 pyproj
 requests
 Pillow
+geopandas
+contextily
