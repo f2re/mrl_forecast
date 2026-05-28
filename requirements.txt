@@ -1,0 +1,12 @@
+torch
+torchvision
+numpy
+flask
+matplotlib
+pandas
+scipy
+python-dotenv
+eccodes
+pyproj
+requests
+Pillow

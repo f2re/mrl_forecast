@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Data and Models
+data/raw/*
+data/processed/*
+models/*
+checkpoints/
+*.npy
+*.npz
+
+# Logs
+training_log.csv
+*.log
+
+# IDEs
+.vscode/
+.idea/
+.DS_Store
