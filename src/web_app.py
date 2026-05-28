@@ -82,6 +82,21 @@ def index():
     return render_template('index.html', local_dir=app.config['LOCAL_DATA_DIR'])
 
 
+@app.route('/api/ftp/stations', methods=['GET'])
+def get_ftp_stations():
+    adapter = NOAAFTPAdapter()
+    stations = adapter.get_available_stations()
+    return jsonify(stations)
+
+
+@app.route('/api/ftp/times', methods=['GET'])
+def get_ftp_times():
+    station = request.args.get('station', 'kokx')
+    adapter = NOAAFTPAdapter()
+    times = adapter.get_available_times(station)
+    return jsonify(times)
+
+
 @app.route('/api/predict', methods=['POST'])
 def predict():
     source_type = request.form.get('source_type')
@@ -102,8 +117,10 @@ def predict():
             array, status_msg = adapter.get_latest_sequence(INPUT_LENGTH)
         
         elif source_type == 'ftp':
+            station_code = request.form.get('ftp_station', 'kokx')
+            time_id = request.form.get('ftp_time', 'latest')
             adapter = NOAAFTPAdapter()
-            array, status_msg = adapter.get_latest_sequence(INPUT_LENGTH)
+            array, status_msg = adapter.get_latest_sequence(INPUT_LENGTH, station_code=station_code, end_file_id=time_id)
         
         else:
             return jsonify({'error': 'Неверный тип источника'}), 400

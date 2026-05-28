@@ -9,6 +9,7 @@ from PIL import Image
 from abc import ABC, abstractmethod
 from typing import Tuple
 from bufr_decoder import MRLBufrDecoder
+from nexrad_decoder import NEXRADDecoder
 
 class BaseRadarAdapter(ABC):
     """Abstract base class for all radar data adapters."""
@@ -59,29 +60,100 @@ class LocalDirectoryAdapter(BaseRadarAdapter):
 
 class NOAAFTPAdapter(BaseRadarAdapter):
     """Adapter for fetching latest radar data from NOAA NWS FTP."""
+    
+    # Mapping of some major NOAA NEXRAD stations to readable names
+    STATION_MAP = {
+        'kokx': 'Нью-Йорк Сити, NY',
+        'kdtx': 'Детройт, MI',
+        'klot': 'Лос-Анджелес, CA',
+        'kbgm': 'Бингемтон, NY',
+        'kewx': 'Остин / Сан-Антонио, TX',
+        'tjua': 'Сан-Хуан, Пуэрто-Рико',
+        'kffc': 'Атланта, GA',
+        'kusa': 'Майами, FL', # Note: Actual miami is KAMX, but keeping simple
+        'kamx': 'Майами, FL',
+        'kbox': 'Бостон, MA',
+        'kgyx': 'Портленд, ME',
+        'kilx': 'Чикаго (Lincoln), IL',
+        'klwx': 'Вашингтон, DC'
+    }
+
     def __init__(self, grid_size=(256, 256)):
         self.host = "tgftp.nws.noaa.gov"
-        # Verified working path for station KOKX
-        self.base_path = "/SL.us008001/DF.of/DC.radar/DS.p94r3/SI.kokx/"
+        self.base_path = "/SL.us008001/DF.of/DC.radar/DS.p94r3/"
         self.grid_size = grid_size
-        self.decoder = MRLBufrDecoder(grid_size=grid_size)
+        self.decoder = NEXRADDecoder(grid_size=grid_size)
 
-    def get_latest_sequence(self, seq_length: int) -> Tuple[np.ndarray, str]:
+    def get_available_stations(self) -> list:
+        """Returns a list of dictionaries with station codes and names."""
+        try:
+            ftp = ftplib.FTP(self.host, timeout=10)
+            ftp.login()
+            ftp.cwd(self.base_path)
+            dirs = [d for d in ftp.nlst() if d.startswith("SI.")]
+            ftp.quit()
+            
+            stations = []
+            for d in dirs:
+                code = d.replace("SI.", "").lower()
+                name = self.STATION_MAP.get(code, f"Радар {code.upper()}")
+                stations.append({'code': code, 'name': name})
+            
+            # Sort with known mapped stations first
+            stations.sort(key=lambda x: (x['code'] not in self.STATION_MAP, x['name']))
+            return stations
+        except Exception as e:
+            print(f"Error fetching stations: {e}")
+            return []
+
+    def get_available_times(self, station_code: str) -> list:
+        """Returns a list of recent files (representing time) for a station."""
+        try:
+            ftp = ftplib.FTP(self.host, timeout=10)
+            ftp.login()
+            station_path = f"{self.base_path}SI.{station_code}/"
+            ftp.cwd(station_path)
+            files = sorted([f for f in ftp.nlst() if f.startswith("sn.") and f != "sn.last"])
+            ftp.quit()
+            
+            # Return last 20 files as available times (they represent recent slices)
+            # In a real app, we'd parse MDTM to show actual HH:MM, but filenames indicate order
+            times = []
+            for f in files[-20:]:
+                times.append({'id': f, 'label': f"Срез {f.split('.')[-1]}"})
+            return times[::-1] # Newest first
+        except Exception as e:
+            print(f"Error fetching times: {e}")
+            return []
+
+    def get_latest_sequence(self, seq_length: int, station_code: str = 'kokx', end_file_id: str = 'latest') -> Tuple[np.ndarray, str]:
         try:
             ftp = ftplib.FTP(self.host, timeout=10)
             ftp.login() 
-            ftp.cwd(self.base_path)
+            station_path = f"{self.base_path}SI.{station_code.lower()}/"
+            ftp.cwd(station_path)
             
-            # Get files starting with 'sn.'
             files = sorted([f for f in ftp.nlst() if f.startswith("sn.") and f != "sn.last"])
             if len(files) < seq_length:
                 ftp.quit()
-                return self._get_fallback_sequence(seq_length, "Недостаточно файлов на FTP.")
+                return self._get_fallback_sequence(seq_length, f"Недостаточно файлов для станции {station_code.upper()}.")
+            
+            if end_file_id == 'latest':
+                target_files = files[-seq_length:]
+            else:
+                if end_file_id not in files:
+                    ftp.quit()
+                    return self._get_fallback_sequence(seq_length, f"Файл {end_file_id} не найден.")
+                end_idx = files.index(end_file_id)
+                start_idx = end_idx - seq_length + 1
+                if start_idx < 0:
+                    ftp.quit()
+                    return self._get_fallback_sequence(seq_length, f"Недостаточно истории перед файлом {end_file_id}.")
+                target_files = files[start_idx:end_idx+1]
                 
-            latest_files = files[-seq_length:]
             sequence = []
             with tempfile.TemporaryDirectory() as tmpdir:
-                for f_name in latest_files:
+                for f_name in target_files:
                     local_path = os.path.join(tmpdir, f_name)
                     with open(local_path, 'wb') as local_file:
                         ftp.retrbinary(f"RETR {f_name}", local_file.write)
@@ -89,9 +161,11 @@ class NOAAFTPAdapter(BaseRadarAdapter):
                     sequence.append(grid)
                     
             ftp.quit()
-            return np.stack(sequence, axis=0), "Данные успешно получены с NOAA FTP (KOKX)."
+            station_name = self.STATION_MAP.get(station_code.lower(), station_code.upper())
+            time_label = "Последние данные" if end_file_id == 'latest' else f"Срез {end_file_id}"
+            return np.stack(sequence, axis=0), f"NOAA FTP: {station_name} | {time_label}"
         except Exception as e:
-            return self._get_fallback_sequence(seq_length, f"Ошибка FTP: {str(e)}. Активирован демо-режим.")
+            return self._get_fallback_sequence(seq_length, f"Ошибка FTP ({station_code}): {str(e)}. Демо-режим.")
 
     def _get_fallback_sequence(self, seq_length: int, reason: str) -> Tuple[np.ndarray, str]:
         sequence = []

@@ -133,6 +133,17 @@
                     </div>
                 </div>
 
+                <!-- FTP Dynamic Settings -->
+                <div id="ftpSettingsSection" class="mb-4 p-3 bg-light rounded shadow-sm border">
+                    <label class="form-label small fw-bold text-primary"><i class="fa-solid fa-satellite-dish me-1"></i> Настройки FTP</label>
+                    <select class="form-select form-select-sm mb-2" id="ftpStationSelect" name="ftp_station" disabled>
+                        <option value="">Загрузка станций...</option>
+                    </select>
+                    <select class="form-select form-select-sm" id="ftpTimeSelect" name="ftp_time" disabled>
+                        <option value="latest">Самые свежие данные (Latest)</option>
+                    </select>
+                </div>
+
                 <div id="localPathSection" class="mb-4" style="display:none;">
                     <label class="form-label small fw-bold">Путь к данным</label>
                     <input type="text" name="local_path" class="form-control form-control-sm" value="{{ local_dir }}">
@@ -197,14 +208,67 @@
     const form = document.getElementById('nowcastForm');
     const loading = document.getElementById('loadingOverlay');
     const results = document.getElementById('resultsContainer');
+    const ftpStationSelect = document.getElementById('ftpStationSelect');
+    const ftpTimeSelect = document.getElementById('ftpTimeSelect');
+    const ftpSettingsSection = document.getElementById('ftpSettingsSection');
     
     // UI switching
     document.querySelectorAll('input[name="source_type"]').forEach(radio => {
         radio.addEventListener('change', (e) => {
             document.getElementById('localPathSection').style.display = e.target.value === 'local' ? 'block' : 'none';
             document.getElementById('uploadSection').style.display = e.target.value === 'upload' ? 'block' : 'none';
+            ftpSettingsSection.style.display = e.target.value === 'ftp' ? 'block' : 'none';
         });
     });
+
+    // Load FTP Stations on init
+    async function loadStations() {
+        try {
+            const res = await fetch('/api/ftp/stations');
+            const stations = await res.json();
+            ftpStationSelect.innerHTML = '';
+            stations.forEach(s => {
+                const opt = document.createElement('option');
+                opt.value = s.code;
+                opt.textContent = s.name;
+                // Pre-select New York (kokx) if available
+                if (s.code === 'kokx') opt.selected = true;
+                ftpStationSelect.appendChild(opt);
+            });
+            ftpStationSelect.disabled = false;
+            loadTimes(ftpStationSelect.value);
+        } catch (e) {
+            ftpStationSelect.innerHTML = '<option value="kokx">Нью-Йорк Сити, NY (Default)</option>';
+            ftpStationSelect.disabled = false;
+            loadTimes('kokx');
+        }
+    }
+
+    // Load FTP Times when station changes
+    async function loadTimes(stationCode) {
+        ftpTimeSelect.innerHTML = '<option value="latest">Загрузка срезов...</option>';
+        ftpTimeSelect.disabled = true;
+        try {
+            const res = await fetch(`/api/ftp/times?station=${stationCode}`);
+            const times = await res.json();
+            ftpTimeSelect.innerHTML = '<option value="latest">Самые свежие данные (Latest)</option>';
+            times.forEach(t => {
+                const opt = document.createElement('option');
+                opt.value = t.id;
+                opt.textContent = t.label;
+                ftpTimeSelect.appendChild(opt);
+            });
+            ftpTimeSelect.disabled = false;
+        } catch (e) {
+            ftpTimeSelect.innerHTML = '<option value="latest">Самые свежие данные (Latest)</option>';
+            ftpTimeSelect.disabled = false;
+        }
+    }
+
+    ftpStationSelect.addEventListener('change', (e) => loadTimes(e.target.value));
+
+    // Initialize
+    loadStations();
 
     form.onsubmit = async (e) => {
         e.preventDefault();

@@ -1,102 +1,92 @@
-# MRL Forecast: Precipitation Nowcasting with ConvLSTM
+# 🌦️ MRL Forecast: ИИ-Наукастинг Осадков
 
-This project implements a precipitation nowcasting system using Deep Learning (Convolutional LSTM). It is designed to predict radar reflectivity maps for the next hour based on past observations.
+Этот проект представляет собой систему краткосрочного прогнозирования (наукастинга) метеорологических радиолокационных данных с использованием глубокого обучения (Convolutional LSTM). Система автоматически предсказывает перемещение и развитие зон осадков на ближайший час.
 
-## Features
+## ✨ Ключевые возможности
 
-- **Deep Learning Model**: Implementation of a multi-layer ConvLSTM for spatio-temporal prediction.
-- **Training Pipeline**: Script for training the model on preprocessed radar data sequences.
-- **Web Interface**: Flask-based web application for visualizing predictions.
-- **Data Preprocessing**: Guidelines for converting BUFR radar data to model-ready NumPy sequences.
+- **🧠 Нейросетевой движок**: Реализация многослойной сети ConvLSTM на PyTorch для пространственно-временного прогнозирования.
+- **📡 Универсальные Дата-Адаптеры**:
+  - **NOAA FTP (Live)**: Автоматическое скачивание и декодирование сырых данных NEXRAD Level III с публичных серверов США (через библиотеку `MetPy`).
+  - **Локальные архивы**: Декодирование файлов формата **BUFR** (МРЛ/ДМРЛ) с помощью `eccodes`.
+  - **Online API**: Поддержка глобальных радарных композитов (RainViewer).
+- **🗺️ Профессиональная визуализация**: Рендеринг данных с наложением колец дальности радара (50–250 км) и стандартизированной цветовой шкалой отражаемости (dBZ).
+- **🖥️ Современный Web UI**: Адаптивный дашборд (Bootstrap 5 + AJAX) с возможностью динамического выбора радаров и исторических срезов.
 
-## Project Structure
+## 📂 Структура проекта
 
 ```text
 mrl_forecast/
 ├── src/
-│   ├── train_nowcasting_model.py  # Model training script
-│   └── web_app.py                 # Flask web application
+│   ├── web_app.py                 # 🚀 Главный Flask веб-сервер
+│   ├── adapters.py                # 🔌 Адаптеры данных (FTP, Local, API)
+│   ├── nexrad_decoder.py          # 🇺🇸 Декодер бинарных файлов NEXRAD (MetPy)
+│   ├── bufr_decoder.py            # 🇷🇺 Декодер формата WMO BUFR (eccodes)
+│   ├── map_visualization.py       # 🗺️ Генерация карт и графиков dBZ
+│   ├── train_nowcasting_model.py  # 🏋️ Скрипт обучения модели
+│   ├── make_dataset.py            # 📦 Пайплайн сборки датасета
+│   └── generate_dummy_data.py     # 🧪 Генератор синтетических данных
+├── templates/
+│   └── index.html                 # 🎨 Шаблон веб-интерфейса (Bootstrap 5)
 ├── data/
-│   ├── raw/                       # Original BUFR data
-│   └── processed/                 # Prepared NumPy sequences (.npy)
-├── models/                        # Saved model weights
-├── notebooks/                     # Exploratory Data Analysis
-├── static/                        # Web app assets (CSS, JS)
-├── templates/                     # Flask HTML templates (optional)
-├── tests/                         # Unit and integration tests
-├── requirements.txt               # Project dependencies
-└── README.md                      # Project documentation
+│   ├── raw/                       # Сырые файлы радара (.bufr, .last)
+│   └── processed/                 # Обработанные Numpy последовательности
+├── models/
+│   └── checkpoints/               # Обученные веса модели (.pt)
+├── docs/                          # Аналитические отчеты и планы
+└── requirements.txt               # Зависимости Python
 ```
 
-## Installation
+## ⚙️ Установка
 
-1. **Clone the repository**:
+1. **Клонируйте репозиторий**:
    ```bash
-   git clone <repository-url>
+   git clone git@github.com:f2re/mrl_forecast.git
    cd mrl_forecast
    ```
 
-2. **Create a virtual environment**:
+2. **Создайте виртуальное окружение**:
    ```bash
    python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   source venv/bin/activate  # Для Windows: venv\Scripts\activate
    ```
 
-3. **Install dependencies**:
+3. **Установите зависимости**:
    ```bash
    pip install -r requirements.txt
    ```
+   *(Примечание: Для macOS может потребоваться установка `eccodes` через Homebrew/MacPorts перед установкой python-пакета).*
 
-## Usage
+## 🚀 Запуск и Использование
 
-### 1. Data Preparation
+### 1. Веб-интерфейс (Оперативный режим)
 
-#### Synthetic Data (for testing)
-```bash
-python src/generate_dummy_data.py --output-dir data/processed --num-samples 50
-```
-
-#### Operational BUFR Data
-If you have raw MRL BUFR files, use the integrated pipeline to decode and prepare them:
-```bash
-python src/make_dataset.py --bufr-dir /path/to/raw/bufr --output-dir data/processed
-```
-This script uses `eccodes` to decode BUFR messages and interpolates the polar radar data to a 256x256 regular grid.
-
-### 2. Training the Model
-
-Run the training script pointing to your processed data:
+Проект поставляется с преднастроенной логикой и может сразу работать с публичными серверами:
 
 ```bash
-python src/train_nowcasting_model.py \
-    --data-dir data/processed \
-    --epochs 20 \
-    --batch-size 4 \
-    --output-dir models/checkpoints
-```
-
-### 3. Running the Web Application
-
-Set the model checkpoint path and start the Flask server:
-
-```bash
-export NOWCAST_MODEL_CHECKPOINT=models/checkpoints/best_model.pt
+export PORT=5005
+export NOWCAST_MODEL_CHECKPOINT=models/thin_checkpoints/best_model.pt
 python src/web_app.py
 ```
+Откройте браузер по адресу `http://localhost:5005`. В интерфейсе вы сможете выбрать реальную метеостанцию (например, Нью-Йорк или Детройт) и получить ИИ-прогноз на основе свежих сканирований.
 
-The web interface displays:
-- **History**: The last 4 frames (1 hour) of observed data.
-- **Forecast**: The next 4 predicted frames (1 hour) using a standard dBZ colormap.
+### 2. Обучение на своих данных
 
-Open `http://localhost:5000` in your browser.
+Если у вас есть собственные данные МРЛ/ДМРЛ в форматах BUFR или NEXRAD:
 
-## Roadmap
+1. Поместите их в папку `data/raw`.
+2. Сформируйте датасет:
+   ```bash
+   python src/make_dataset.py --bufr-dir data/raw --output-dir data/processed
+   ```
+3. Запустите тренировку:
+   ```bash
+   python src/train_nowcasting_model.py --data-dir data/processed --epochs 20 --output-dir models/checkpoints
+   ```
 
-- [ ] Support for TrajGRU and PredRNN architectures.
-- [ ] Integration of Generative Adversarial Networks (GANs) for sharper predictions.
-- [ ] Direct BUFR decoding support.
-- [ ] Leaflet.js integration for map overlays.
+## 🗺️ Дорожная карта (Roadmap)
+- [ ] Перевод визуализации на географические проекции (Cartopy/GeoPandas).
+- [ ] Поддержка архитектуры TrajGRU для работы с вращательными движениями циклонов.
+- [ ] Интеграция интерактивных карт (Leaflet.js).
 
-## License
-
+## 📄 Лицензия
 MIT License
