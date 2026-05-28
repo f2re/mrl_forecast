@@ -55,12 +55,11 @@ mrl_forecast/
    pip install -r requirements.txt
    ```
    *(Примечание: Для macOS может потребоваться установка `eccodes` через Homebrew/MacPorts перед установкой python-пакета).*
-
 ## 🚀 Запуск и Использование
 
 ### 1. Веб-интерфейс (Оперативный режим)
 
-Проект поставляется с преднастроенной логикой и может сразу работать с публичными серверами:
+Проект поставляется с преднастроенной логикой и может сразу работать с публичными серверами (NOAA/RainViewer):
 
 ```bash
 export PORT=5005
@@ -69,22 +68,48 @@ python src/web_app.py
 ```
 Откройте браузер по адресу `http://localhost:5005`. В интерфейсе вы сможете выбрать реальную метеостанцию (например, Нью-Йорк или Детройт) и получить ИИ-прогноз на основе свежих сканирований.
 
-### 2. Обучение на своих данных
+---
 
-Если у вас есть собственные данные МРЛ/ДМРЛ в форматах BUFR или NEXRAD:
+## 🧬 Полный цикл ИИ: От данных до прогноза
 
-1. Поместите их в папку `data/raw`.
-2. Сформируйте датасет:
-   ```bash
-   python src/make_dataset.py --bufr-dir data/raw --output-dir data/processed
-   ```
-3. Запустите тренировку:
-   ```bash
-   python src/train_nowcasting_model.py --data-dir data/processed --epochs 20 --output-dir models/checkpoints
-   ```
+Ниже приведен пошаговый процесс обучения собственной модели на архивных данных NEXRAD (США).
 
-## 🗺️ Дорожная карта (Roadmap)
-- [ ] Перевод визуализации на географические проекции (Cartopy/GeoPandas).
+### Шаг 1: Скачивание архивных данных
+Используйте `src/download_archive.py` для загрузки сырых файлов Level II из облака AWS S3:
+```bash
+# Скачать 50 последних сканов для станции KOKX (Нью-Йорк) за конкретную дату
+python src/download_archive.py --station KOKX --date 2024-05-20 --count 50 --output data/raw/archive_KOKX
+```
+
+### Шаг 2: Создание обучающего датасета
+Преобразуйте сырые радарные данные в 2D-сетки и сформируйте временные последовательности (Numpy):
+```bash
+# --seq-len 8 означает 4 кадра истории + 4 кадра для прогноза
+python src/make_dataset.py --archive-dir data/raw/archive_KOKX --output-dir data/processed_archive --seq-len 8
+```
+
+### Шаг 3: Обучение нейросети ConvLSTM
+Запустите процесс обучения. Модель будет сохранять лучший чекпоинт в указанную папку:
+```bash
+python src/train_nowcasting_model.py \
+    --data-dir data/processed_archive \
+    --epochs 20 \
+    --batch-size 4 \
+    --lr 1e-4 \
+    --output-dir models/real_checkpoints
+```
+
+### Шаг 4: Применение (Inference)
+Запустите веб-приложение, указав путь к вашей новой модели:
+```bash
+export NOWCAST_MODEL_CHECKPOINT=models/real_checkpoints/best_model.pt
+python src/web_app.py
+```
+
+---
+
+## ⚙️ Установка
+
 - [ ] Поддержка архитектуры TrajGRU для работы с вращательными движениями циклонов.
 - [ ] Интеграция интерактивных карт (Leaflet.js).
 

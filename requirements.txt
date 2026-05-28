@@ -12,3 +12,7 @@ requests
 Pillow
 geopandas
 contextily
+metpy
+nexradaws
+boto3
+arm-pyart

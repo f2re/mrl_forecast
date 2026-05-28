@@ -7,8 +7,17 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Step 2: Generate Dummy Data (Optional)
-If you don't have real data yet:
+## Step 2: Acquire Data
+### Option A: Real Archive Data (Recommended)
+```bash
+# Download real NEXRAD scans
+python src/download_archive.py --date 2024-05-20 --count 20 --output data/raw/archive
+# Process into sequences
+python src/make_dataset.py --archive-dir data/raw/archive --output-dir data/processed --seq-len 8
+```
+
+### Option B: Generate Dummy Data (Optional)
+If you just want to test the training loop quickly:
 ```bash
 python src/generate_dummy_data.py --output-dir data/processed --num-samples 20
 ```
