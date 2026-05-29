@@ -402,37 +402,47 @@
         const rawRes = await fetch('/api/inventory/raw');
         const rawItems = await rawRes.json();
         const rawTable = document.getElementById('rawInventoryTable');
-        rawTable.innerHTML = rawItems.map(item => `
-            <tr>
-                <td><b>${item.station}</b></td>
-                <td>${item.date}</td>
-                <td>${item.downloaded_count || item.requested_count}</td>
-                <td><span class="status-dot bg-${item.status}"></span> ${item.status}</td>
-                <td>
-                    <button class="btn btn-sm btn-outline-primary" onclick="openPrepModal('${item.path.replace(/\\/g, '/')}')">
-                        <i class="fa-solid fa-gear"></i> Подготовить
-                    </button>
-                </td>
-            </tr>
-        `).join('');
+        
+        if (rawItems.length === 0) {
+            rawTable.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-muted">Архив пуст</td></tr>';
+        } else {
+            rawTable.innerHTML = rawItems.map(item => `
+                <tr>
+                    <td><span class="badge bg-light text-dark border">${item.station.toUpperCase()}</span></td>
+                    <td><i class="fa-regular fa-calendar me-1"></i> ${item.date}</td>
+                    <td><span class="badge bg-info-subtle text-info border-info-subtle px-2">${item.downloaded_count || 0} файлов</span></td>
+                    <td><span class="status-dot bg-${item.status}"></span> <small class="text-uppercase fw-bold text-muted">${item.status}</small></td>
+                    <td class="text-end">
+                        <button class="btn btn-sm btn-primary py-1 px-3" onclick="openPrepModal('${item.path.replace(/\\/g, '/')}')">
+                            <i class="fa-solid fa-play small me-1"></i> Подготовить
+                        </button>
+                    </td>
+                </tr>
+            `).join('');
+        }
 
         // Datasets
         const dsRes = await fetch('/api/inventory/datasets');
         const dsItems = await dsRes.json();
         const dsTable = document.getElementById('datasetsInventoryTable');
-        dsTable.innerHTML = dsItems.map(item => `
-            <tr>
-                <td class="small"><code>${item.folder_name}</code></td>
-                <td>${item.station}</td>
-                <td>${item.sample_count}</td>
-                <td>${item.sequence_length}</td>
-                <td>
-                    <button class="btn btn-sm btn-outline-success" onclick="selectDatasetForTrain('${item.path.replace(/\\/g, '/')}')">
-                        <i class="fa-solid fa-brain"></i> В обучение
-                    </button>
-                </td>
-            </tr>
-        `).join('');
+        
+        if (dsItems.length === 0) {
+            dsTable.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-muted">Нет готовых датасетов</td></tr>';
+        } else {
+            dsTable.innerHTML = dsItems.map(item => `
+                <tr>
+                    <td><code class="small text-primary">${item.folder_name}</code></td>
+                    <td><span class="badge bg-light text-dark border">${item.station.toUpperCase()}</span></td>
+                    <td><span class="badge bg-success-subtle text-success px-2 border-success-subtle">${item.sample_count} сэмплов</span></td>
+                    <td><small class="fw-bold">${item.sequence_length} кадров</small></td>
+                    <td class="text-end">
+                        <button class="btn btn-sm btn-success py-1 px-3" onclick="selectDatasetForTrain('${item.path.replace(/\\/g, '/')}')">
+                            <i class="fa-solid fa-brain small me-1"></i> Обучить
+                        </button>
+                    </td>
+                </tr>
+            `).join('');
+        }
         
         const dsSelect = document.getElementById('trainDatasetSelect');
         dsSelect.innerHTML = dsItems.map(item => `<option value="${item.path}">${item.folder_name} (${item.station})</option>`).join('');
@@ -443,21 +453,29 @@
         const modelTable = document.getElementById('modelsInventoryTable');
         const modelSelect = document.getElementById('modelSelectionList');
         
-        modelTable.innerHTML = modelItems.map(item => `
-            <tr>
-                <td><b>${item.folder_name}</b></td>
-                <td>${item.station}</td>
-                <td><code>${item.best_val_loss ? item.best_val_loss.toFixed(6) : 'N/A'}</code></td>
-                <td class="small">${item.timestamp_updated}</td>
-                <td>
-                    <button class="btn btn-sm btn-primary" onclick="loadModel('${item.path.replace(/\\/g, '/')}')">Использовать</button>
-                </td>
-            </tr>
-        `).join('');
-        
-        modelSelect.innerHTML = modelItems.map(item => `
-            <li><a class="dropdown-item" href="#" onclick="loadModel('${item.path.replace(/\\/g, '/')}')">${item.folder_name}</a></li>
-        `).join('');
+        if (modelItems.length === 0) {
+            modelTable.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-muted">Реестр пуст</td></tr>';
+            modelSelect.innerHTML = '<li><a class="dropdown-item disabled" href="#">Нет доступных моделей</a></li>';
+        } else {
+            modelTable.innerHTML = modelItems.map(item => `
+                <tr>
+                    <td><i class="fa-solid fa-microchip me-2 text-primary"></i> <b>${item.folder_name}</b></td>
+                    <td><span class="badge bg-light text-dark border">${item.station.toUpperCase()}</span></td>
+                    <td><code class="text-danger fw-bold">${item.best_val_loss ? item.best_val_loss.toFixed(5) : '---'}</code></td>
+                    <td><small class="text-muted">${new Date(item.timestamp_updated).toLocaleString()}</small></td>
+                    <td class="text-end">
+                        <button class="btn btn-sm btn-primary py-1 px-3" onclick="loadModel('${item.path.replace(/\\/g, '/')}')">Загрузить</button>
+                    </td>
+                </tr>
+            `).join('');
+            
+            modelSelect.innerHTML = modelItems.map(item => `
+                <li><a class="dropdown-item d-flex justify-content-between align-items-center" href="#" onclick="loadModel('${item.path.replace(/\\/g, '/')}')">
+                    <span>${item.folder_name}</span>
+                    <span class="badge bg-light text-muted border ms-2">${item.station}</span>
+                </a></li>
+            `).join('');
+        }
     }
 
     // === TASK POLLING ===
