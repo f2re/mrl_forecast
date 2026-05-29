@@ -45,6 +45,7 @@ from typing import Tuple, List
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
+from metadata_utils import save_metadata, load_metadata
 
 
 class RadarSequenceDataset(Dataset):
@@ -262,8 +263,27 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     # Setup output directory
-    os.makedirs(args.output_dir, exist_ok=True)
-    log_path = os.path.join(args.output_dir, 'training_log.csv')
+    dataset_meta = load_metadata(args.data_dir)
+    station = dataset_meta.get('station', 'unknown') if dataset_meta else 'unknown'
+    model_id = f"model_{station}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    model_dir = os.path.join(args.output_dir, model_id)
+    os.makedirs(model_dir, exist_ok=True)
+
+    metadata = {
+        'type': 'model',
+        'model_id': model_id,
+        'dataset_path': args.data_dir,
+        'station': station,
+        'epochs': args.epochs,
+        'batch_size': args.batch_size,
+        'lr': args.lr,
+        'hidden_channels': args.hidden_channels,
+        'status': 'training',
+        'best_val_loss': float('inf')
+    }
+    save_metadata(model_dir, metadata)
+
+    log_path = os.path.join(model_dir, 'training_log.csv')
     with open(log_path, 'w') as f:
         f.write('epoch,train_loss,val_loss,timestamp\n')
 
@@ -280,7 +300,7 @@ def main():
         # Save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            checkpoint_path = os.path.join(args.output_dir, 'best_model.pt')
+            checkpoint_path = os.path.join(model_dir, 'best_model.pt')
             torch.save({
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
@@ -290,6 +310,13 @@ def main():
                 'target_length': args.target_length,
                 'hidden_channels': hidden_channels,
             }, checkpoint_path)
+            
+            metadata['best_val_loss'] = val_loss
+            metadata['best_epoch'] = epoch
+            save_metadata(model_dir, metadata)
+
+    metadata['status'] = 'completed'
+    save_metadata(model_dir, metadata)
     print(f"Training complete. Best validation loss: {best_val_loss:.6f}")
 
 

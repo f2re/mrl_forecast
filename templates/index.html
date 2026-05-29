@@ -3,494 +3,607 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MRL Forecast | ИИ Прогноз Осадков</title>
+    <title>MRL Forecast Pro | Метеорологическая ИИ-платформа</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         :root {
-            --primary-color: #0d6efd;
-            --bg-light: #f8f9fa;
+            --sidebar-bg: #1e293b;
+            --sidebar-color: #f8fafc;
+            --primary-blue: #3b82f6;
+            --bg-light: #f1f5f9;
         }
         body {
             background-color: var(--bg-light);
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            overflow-x: hidden;
         }
         .sidebar {
-            min-height: 100vh;
-            background: white;
-            box-shadow: 2px 0 10px rgba(0,0,0,0.05);
+            width: 260px;
+            height: 100vh;
+            position: fixed;
+            background: var(--sidebar-bg);
+            color: var(--sidebar-color);
+            padding: 1.5rem;
+            z-index: 1000;
         }
-        .main-content {
+        .main-container {
+            margin-left: 260px;
             padding: 2rem;
+            min-height: 100vh;
         }
+        .nav-link {
+            color: #94a3b8;
+            padding: 0.75rem 1rem;
+            border-radius: 0.5rem;
+            margin-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            transition: all 0.2s;
+        }
+        .nav-link:hover, .nav-link.active {
+            color: white;
+            background: rgba(255,255,255,0.1);
+        }
+        .nav-link.active {
+            background: var(--primary-blue);
+        }
+        .nav-link i { width: 20px; margin-right: 12px; }
+        
         .card {
             border: none;
-            border-radius: 12px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.05);
-            transition: transform 0.2s;
+            border-radius: 0.75rem;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
         }
-        .card:hover {
-            transform: translateY(-2px);
+        .card-header { background: white; border-bottom: 1px solid #e2e8f0; font-weight: 600; }
+        
+        .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .bg-running { background: #3b82f6; animation: pulse 2s infinite; }
+        .bg-completed { background: #10b981; }
+        .bg-failed { background: #ef4444; }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.4; }
+            100% { opacity: 1; }
         }
-        .btn-primary {
-            border-radius: 8px;
-            padding: 10px 25px;
-            font-weight: 600;
-        }
-        .radar-img-container {
-            text-align: center;
-            background: #fff;
-            padding: 15px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-        }
-        .radar-img-container img {
-            max-width: 100%;
-            border-radius: 8px;
-            background: #f0f0f0;
-        }
-        .time-label {
-            margin-top: 8px;
-            font-weight: 500;
-            color: #6c757d;
-        }
-        #loadingOverlay {
-            display: none;
-            position: fixed;
-            top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(255,255,255,0.8);
-            z-index: 9999;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-        }
-        .source-badge {
+        
+        .log-container {
+            background: #0f172a;
+            color: #38bdf8;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            font-family: 'Fira Code', monospace;
             font-size: 0.8rem;
-            padding: 4px 8px;
-            border-radius: 5px;
-            background: #e9ecef;
-            color: #495057;
+            height: 300px;
+            overflow-y: auto;
+            white-space: pre-wrap;
         }
-        .legend-container {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-top: 10px;
-            flex-wrap: wrap;
+        
+        #loadingOverlay {
+            display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(255,255,255,0.8); z-index: 9999;
+            flex-direction: column; align-items: center; justify-content: center;
         }
-        .legend-item {
-            display: flex;
-            align-items: center;
-            font-size: 0.75rem;
+        
+        .radar-img-container img {
+            width: 100%; height: auto; border-radius: 0.5rem; background: #000;
         }
-        .legend-color {
-            width: 12px;
-            height: 12px;
-            margin-right: 4px;
-            border-radius: 2px;
-        }
+        .section-pane { display: none; }
+        .section-pane.active { display: block; }
     </style>
 </head>
 <body>
 
 <div id="loadingOverlay">
-    <div class="spinner-border text-primary" role="status" style="width: 3rem; height: 3rem;"></div>
-    <h5 class="mt-3">Обработка данных...</h5>
-    <p class="text-muted">Скачивание с FTP и работа ИИ-модели</p>
+    <div class="spinner-border text-primary" style="width: 3rem; height: 3rem;"></div>
+    <h5 class="mt-3">Обработка...</h5>
 </div>
 
-<div class="container-fluid">
-    <div class="row">
-        <!-- Sidebar -->
-        <nav class="col-md-3 col-lg-2 d-md-block sidebar collapse p-4">
-            <div class="d-flex align-items-center mb-4">
-                <i class="fa-solid fa-cloud-bolt fa-2x text-primary me-2"></i>
-                <h4 class="mb-0 fw-bold">MRL Forecast</h4>
+<!-- Sidebar -->
+<div class="sidebar">
+    <div class="d-flex align-items-center mb-5">
+        <i class="fa-solid fa-cloud-bolt fa-2x text-primary me-2"></i>
+        <h4 class="mb-0 fw-bold">MRL Forecast <span class="badge bg-primary fs-6">Pro</span></h4>
+    </div>
+    
+    <nav class="nav flex-column">
+        <a class="nav-link active" href="#" data-pane="inference">
+            <i class="fa-solid fa-chart-line"></i> Прогноз (Dashboard)
+        </a>
+        <a class="nav-link" href="#" data-pane="data-mgmt">
+            <i class="fa-solid fa-download"></i> Менеджер данных
+        </a>
+        <a class="nav-link" href="#" data-pane="datasets">
+            <i class="fa-solid fa-layer-group"></i> Подготовка датасетов
+        </a>
+        <a class="nav-link" href="#" data-pane="models">
+            <i class="fa-solid fa-brain"></i> Лаборатория моделей
+        </a>
+    </nav>
+    
+    <div class="mt-auto pt-5">
+        <div class="card bg-dark border-0">
+            <div class="card-body p-3">
+                <h6 class="small fw-bold text-white mb-1">Активная модель:</h6>
+                <p id="activeModelName" class="small text-muted mb-0">Стандартная (Built-in)</p>
             </div>
-            
-            <hr>
-            
-            <form id="nowcastForm">
-                <div class="mb-4">
-                    <label class="form-label fw-bold small text-uppercase">Источник данных</label>
-                    <div class="form-check mb-2">
-                        <input class="form-check-input" type="radio" name="source_type" id="src_ftp" value="ftp" checked>
-                        <label class="form-check-label" for="src_ftp">
-                            <i class="fa-solid fa-server me-1"></i> NOAA FTP (Live)
-                        </label>
-                    </div>
-                    <div class="form-check mb-2">
-                        <input class="form-check-input" type="radio" name="source_type" id="src_local" value="local">
-                        <label class="form-check-label" for="src_local">
-                            <i class="fa-regular fa-folder-open me-1"></i> Локальная папка
-                        </label>
-                    </div>
-                    <div class="form-check mb-2">
-                        <input class="form-check-input" type="radio" name="source_type" id="src_upload" value="upload">
-                        <label class="form-check-label" for="src_upload">
-                            <i class="fa-solid fa-upload me-1"></i> Загрузить файл
-                        </label>
-                    </div>
-                </div>
+        </div>
+    </div>
+</div>
 
-                <!-- FTP Dynamic Settings -->
-                <div id="ftpSettingsSection" class="mb-4 p-3 bg-light rounded shadow-sm border">
-                    <label class="form-label small fw-bold text-primary"><i class="fa-solid fa-satellite-dish me-1"></i> Настройки FTP</label>
-                    <select class="form-select form-select-sm mb-2" id="ftpStationSelect" name="ftp_station" disabled>
-                        <option value="">Загрузка станций...</option>
-                    </select>
-                    <select class="form-select form-select-sm" id="ftpTimeSelect" name="ftp_time" disabled>
-                        <option value="latest">Самые свежие данные (Latest)</option>
-                    </select>
-                </div>
-
-                <div id="localPathSection" class="mb-4" style="display:none;">
-                    <label class="form-label small fw-bold">Путь к данным</label>
-                    <input type="text" name="local_path" class="form-control form-control-sm" value="{{ local_dir }}">
-                </div>
-
-                <div id="uploadSection" class="mb-4" style="display:none;">
-                    <label class="form-label small fw-bold">Выберите .npy/.npz</label>
-                    <input type="file" name="file" class="form-control form-control-sm">
-                </div>
-
-                <button type="submit" class="btn btn-primary w-100 shadow-sm mt-2">
-                    <i class="fa-solid fa-play me-1"></i> Запустить
+<!-- Main Content -->
+<div class="main-container">
+    
+    <!-- SECTION: INFERENCE -->
+    <div id="pane-inference" class="section-pane active">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2 class="fw-bold">Оперативный прогноз</h2>
+            <div class="dropdown">
+                <button class="btn btn-white shadow-sm dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                    <i class="fa-solid fa-robot me-2"></i> Выбрать модель
                 </button>
-            </form>
-
-            <div class="mt-auto pt-5">
-                <div class="card bg-light border-0">
-                    <div class="card-body p-3">
-                        <h6 class="small fw-bold mb-1">О модели</h6>
-                        <p class="small text-muted mb-0">Архитектура: ConvLSTM<br>Разрешение: 15 мин<br>Сетка: 256x256</p>
+                <ul class="dropdown-menu shadow border-0" id="modelSelectionList">
+                    <!-- Заполняется JS -->
+                </ul>
+            </div>
+        </div>
+        
+        <div class="row mb-4">
+            <div class="col-lg-3">
+                <div class="card h-100">
+                    <div class="card-header">Настройки источника</div>
+                    <div class="card-body">
+                        <form id="nowcastForm">
+                            <div class="mb-3">
+                                <label class="form-label small fw-bold">Тип данных</label>
+                                <select class="form-select form-select-sm" name="source_type" id="srcType">
+                                    <option value="ftp">NOAA FTP (Live)</option>
+                                    <option value="upload">Загрузка файла</option>
+                                </select>
+                            </div>
+                            <div id="ftpControls">
+                                <div class="mb-3">
+                                    <label class="form-label small fw-bold">Станция</label>
+                                    <select class="form-select form-select-sm" id="ftpStationSelect" name="ftp_station"></select>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label small fw-bold">Время</label>
+                                    <select class="form-select form-select-sm" id="ftpTimeSelect" name="ftp_time"></select>
+                                </div>
+                            </div>
+                            <div id="uploadControls" style="display:none">
+                                <div class="mb-3">
+                                    <label class="form-label small fw-bold">Файл (.npy/.npz)</label>
+                                    <input type="file" name="file" class="form-control form-control-sm">
+                                </div>
+                            </div>
+                            <button type="submit" class="btn btn-primary w-100 mt-2">Запустить ИИ</button>
+                        </form>
                     </div>
                 </div>
             </div>
-        </nav>
-
-        <!-- Main Content -->
-        <main class="col-md-9 ms-sm-auto col-lg-10 main-content">
-            <ul class="nav nav-tabs mb-4" id="mainTabs" role="tablist">
-                <li class="nav-item" role="presentation">
-                    <button class="nav-link active" id="predict-tab" data-bs-toggle="tab" data-bs-target="#predict" type="button" role="tab"><i class="fa-solid fa-chart-line me-1"></i> Прогноз</button>
-                </li>
-                <li class="nav-item" role="presentation">
-                    <button class="nav-link" id="download-tab" data-bs-toggle="tab" data-bs-target="#download" type="button" role="tab"><i class="fa-solid fa-download me-1"></i> Загрузка данных</button>
-                </li>
-                <li class="nav-item" role="presentation">
-                    <button class="nav-link" id="train-tab" data-bs-toggle="tab" data-bs-target="#train" type="button" role="tab"><i class="fa-solid fa-brain me-1"></i> Обучение</button>
-                </li>
-            </ul>
-
-            <div class="tab-content" id="mainTabsContent">
-                <!-- Вкладка Прогноза -->
-                <div class="tab-pane fade show active" id="predict" role="tabpanel">
-                    <div class="d-flex justify-content-between align-items-center mb-4">
-                        <h2 class="fw-bold">Оперативный прогноз осадков</h2>
-                        <div id="statusBadge" class="source-badge">
-                            <i class="fa-solid fa-circle text-success me-1 small"></i> Система готова
-                        </div>
-                    </div>
-                    <div id="resultsContainer">
-                        <div class="alert alert-info border-0 shadow-sm">
-                            <i class="fa-solid fa-circle-info me-2"></i> Выберите источник данных слева и нажмите «Запустить» для получения актуальной информации.
+            <div class="col-lg-9">
+                <div id="resultsContainer">
+                    <div class="card">
+                        <div class="card-body text-center py-5">
+                            <i class="fa-solid fa-satellite-dish fa-3x text-muted mb-3"></i>
+                            <p class="text-muted">Готов к работе. Настройте источник и запустите прогноз.</p>
                         </div>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
 
-                <!-- Вкладка Загрузки -->
-                <div class="tab-pane fade" id="download" role="tabpanel">
-                    <h2 class="fw-bold mb-4">Скачивание архивных данных</h2>
-                    <div class="card mb-4">
-                        <div class="card-body">
-                            <form id="downloadForm" class="row g-3">
-                                <div class="col-md-4">
-                                    <label class="form-label fw-bold">Станция</label>
-                                    <select class="form-select" name="station" id="dlStationSelect">
-                                        <option value="KOKX">Загрузка...</option>
-                                    </select>
-                                </div>
-                                <div class="col-md-4">
-                                    <label class="form-label fw-bold">Дата</label>
-                                    <input type="date" class="form-control" name="date" id="dlDate">
-                                </div>
-                                <div class="col-md-2">
-                                    <label class="form-label fw-bold">Кол-во файлов</label>
-                                    <input type="number" class="form-control" name="count" value="100">
-                                </div>
-                                <div class="col-md-2 d-flex align-items-end">
-                                    <button type="submit" class="btn btn-primary w-100">Начать</button>
-                                </div>
-                            </form>
-                        </div>
-                    </div>
-                    <div class="card bg-dark text-light">
-                        <div class="card-header border-secondary d-flex justify-content-between align-items-center">
-                            <span><i class="fa-solid fa-terminal me-2"></i>Лог процесса</span>
-                            <span id="dlStatus" class="badge bg-secondary">Ожидание</span>
-                        </div>
-                        <div class="card-body p-0">
-                            <textarea id="dlLogs" class="form-control bg-dark text-light border-0 font-monospace small" rows="15" readonly style="resize: none;"></textarea>
-                        </div>
+    <!-- SECTION: DATA MANAGEMENT -->
+    <div id="pane-data-mgmt" class="section-pane">
+        <h2 class="fw-bold mb-4">Менеджер сырых данных</h2>
+        <div class="row">
+            <div class="col-lg-4">
+                <div class="card mb-4">
+                    <div class="card-header">Скачать новые данные (AWS)</div>
+                    <div class="card-body">
+                        <form id="downloadForm">
+                            <div class="mb-3">
+                                <label class="form-label small">ID станции</label>
+                                <select class="form-select" name="station" id="dlStationSelect"></select>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label small">Дата</label>
+                                <input type="date" class="form-control" name="date" id="dlDate">
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label small">Количество сканов</label>
+                                <input type="number" class="form-control" name="count" value="100">
+                            </div>
+                            <button type="submit" class="btn btn-primary w-100">Начать скачивание</button>
+                        </form>
                     </div>
                 </div>
+                <div id="dlTaskStatus" class="card d-none">
+                    <div class="card-header d-flex justify-content-between">
+                        Лог загрузки <span class="badge bg-primary" id="dlStatusBadge">RUNNING</span>
+                    </div>
+                    <div class="card-body p-0">
+                        <div id="dlLogs" class="log-container" style="height: 200px;"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-8">
+                <div class="card">
+                    <div class="card-header">Архив загрузок (data/raw/archive)</div>
+                    <div class="card-body p-0">
+                        <table class="table table-hover mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Станция</th>
+                                    <th>Дата</th>
+                                    <th>Файлов</th>
+                                    <th>Статус</th>
+                                    <th>Действие</th>
+                                </tr>
+                            </thead>
+                            <tbody id="rawInventoryTable"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 
-                <!-- Вкладка Обучения -->
-                <div class="tab-pane fade" id="train" role="tabpanel">
-                    <h2 class="fw-bold mb-4">Обучение собственной модели</h2>
-                    <div class="card mb-4">
-                        <div class="card-body">
-                            <form id="trainForm" class="row g-3">
-                                <div class="col-md-3">
-                                    <label class="form-label fw-bold">Эпохи</label>
+    <!-- SECTION: DATASETS -->
+    <div id="pane-datasets" class="section-pane">
+        <h2 class="fw-bold mb-4">Подготовка датасетов</h2>
+        <div class="row">
+            <div class="col-lg-8">
+                <div class="card mb-4">
+                    <div class="card-header">Готовые датасеты (Numpy sequences)</div>
+                    <div class="card-body p-0">
+                        <table class="table table-hover mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Станция</th>
+                                    <th>Сэмплов</th>
+                                    <th>Seq Len</th>
+                                    <th>Действие</th>
+                                </tr>
+                            </thead>
+                            <tbody id="datasetsInventoryTable"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div id="prepTaskStatus" class="card d-none">
+                    <div class="card-header">Процесс подготовки</div>
+                    <div class="card-body p-0">
+                        <div id="prepLogs" class="log-container"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-4">
+                <div class="alert alert-info border-0">
+                    <i class="fa-solid fa-lightbulb me-2"></i> 
+                    Выберите архив в «Менеджере данных» и нажмите «Подготовить», чтобы создать новый датасет.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- SECTION: MODELS -->
+    <div id="pane-models" class="section-pane">
+        <h2 class="fw-bold mb-4">Лаборатория моделей</h2>
+        <div class="row">
+            <div class="col-lg-4">
+                <div class="card mb-4">
+                    <div class="card-header">Запустить обучение</div>
+                    <div class="card-body">
+                        <form id="trainForm">
+                            <div class="mb-3">
+                                <label class="form-label small">Выбор датасета</label>
+                                <select class="form-select" name="dataset_dir" id="trainDatasetSelect"></select>
+                            </div>
+                            <div class="row g-2 mb-3">
+                                <div class="col-6">
+                                    <label class="form-label small">Эпохи</label>
                                     <input type="number" class="form-control" name="epochs" value="10">
                                 </div>
-                                <div class="col-md-3">
-                                    <label class="form-label fw-bold">Batch Size</label>
+                                <div class="col-6">
+                                    <label class="form-label small">Батч</label>
                                     <input type="number" class="form-control" name="batch_size" value="4">
                                 </div>
-                                <div class="col-md-3">
-                                    <label class="form-label fw-bold">Learning Rate</label>
-                                    <input type="text" class="form-control" name="lr" value="1e-4">
-                                </div>
-                                <div class="col-md-3 d-flex align-items-end">
-                                    <button type="submit" class="btn btn-success w-100">Запустить обучение</button>
-                                </div>
-                            </form>
-                        </div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label small">LR</label>
+                                <input type="text" class="form-control" name="lr" value="1e-4">
+                            </div>
+                            <button type="submit" class="btn btn-success w-100">Начать обучение</button>
+                        </form>
                     </div>
-                    <div class="card bg-dark text-light">
-                        <div class="card-header border-secondary d-flex justify-content-between align-items-center">
-                            <span><i class="fa-solid fa-terminal me-2"></i>Лог процесса обучения</span>
-                            <span id="trainStatus" class="badge bg-secondary">Ожидание</span>
-                        </div>
-                        <div class="card-body p-0">
-                            <textarea id="trainLogs" class="form-control bg-dark text-light border-0 font-monospace small" rows="15" readonly style="resize: none;"></textarea>
-                        </div>
+                </div>
+                <div id="trainTaskStatus" class="card d-none">
+                    <div class="card-header">Лог обучения</div>
+                    <div class="card-body p-0">
+                        <div id="trainLogs" class="log-container"></div>
                     </div>
                 </div>
             </div>
+            <div class="col-lg-8">
+                <div class="card">
+                    <div class="card-header">Реестр обученных моделей</div>
+                    <div class="card-body p-0">
+                        <table class="table table-hover mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Модель</th>
+                                    <th>Станция</th>
+                                    <th>Loss</th>
+                                    <th>Дата создания</th>
+                                    <th>Действие</th>
+                                </tr>
+                            </thead>
+                            <tbody id="modelsInventoryTable"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 
-            <!-- Legend Overlay (Fixed bottom right if desired, or here) -->
-            <div class="card mt-4 bg-white">
-                <div class="card-body">
-                    <h6 class="small fw-bold mb-2">Легенда отражаемости (dBZ)</h6>
-                    <div class="legend-container">
-                        <div class="legend-item"><div class="legend-color" style="background:#00ecec"></div> 5-10</div>
-                        <div class="legend-item"><div class="legend-color" style="background:#01a0f6"></div> 10-20</div>
-                        <div class="legend-item"><div class="legend-color" style="background:#00ff00"></div> 20-35</div>
-                        <div class="legend-item"><div class="legend-color" style="background:#ffff00"></div> 35-45</div>
-                        <div class="legend-item"><div class="legend-color" style="background:#ff0000"></div> 45-55</div>
-                        <div class="legend-item"><div class="legend-color" style="background:#ff00ff"></div> 60+ (Град)</div>
-                    </div>
-                </div>
+</div>
+
+<!-- Modal for dataset preparation -->
+<div class="modal fade" id="prepModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Подготовка датасета</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-        </main>
+            <div class="modal-body">
+                <form id="prepForm">
+                    <input type="hidden" name="archive_dir" id="prepArchiveDir">
+                    <div class="mb-3">
+                        <label class="form-label">Длина последовательности (seq_len)</label>
+                        <input type="number" class="form-control" name="seq_len" value="8">
+                        <div class="form-text">4 кадра истории + 4 кадра будущего (для 15-мин интервала)</div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Запустить процесс</button>
+                </form>
+            </div>
+        </div>
     </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    const form = document.getElementById('nowcastForm');
-    const loading = document.getElementById('loadingOverlay');
-    const results = document.getElementById('resultsContainer');
-    const ftpStationSelect = document.getElementById('ftpStationSelect');
-    const ftpTimeSelect = document.getElementById('ftpTimeSelect');
-    const ftpSettingsSection = document.getElementById('ftpSettingsSection');
-    
-    // UI switching
-    document.querySelectorAll('input[name="source_type"]').forEach(radio => {
-        radio.addEventListener('change', (e) => {
-            document.getElementById('localPathSection').style.display = e.target.value === 'local' ? 'block' : 'none';
-            document.getElementById('uploadSection').style.display = e.target.value === 'upload' ? 'block' : 'none';
-            ftpSettingsSection.style.display = e.target.value === 'ftp' ? 'block' : 'none';
+    // Navigation logic
+    document.querySelectorAll('.nav-link').forEach(link => {
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            const paneId = link.getAttribute('data-pane');
+            
+            document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+            link.classList.add('active');
+            
+            document.querySelectorAll('.section-pane').forEach(p => p.classList.remove('active'));
+            document.getElementById('pane-' + paneId).classList.add('active');
+            
+            // Refresh inventory when switching
+            refreshInventory();
         });
     });
 
-    // Load FTP Stations on init
-    async function loadStations() {
-        try {
-            const res = await fetch('/api/ftp/stations');
-            const stations = await res.json();
-            ftpStationSelect.innerHTML = '';
-            stations.forEach(s => {
-                const opt = document.createElement('option');
-                opt.value = s.code;
-                opt.textContent = s.name;
-                // Pre-select New York (kokx) if available
-                if (s.code === 'kokx') opt.selected = true;
-                ftpStationSelect.appendChild(opt);
-            });
-            ftpStationSelect.disabled = false;
-            loadTimes(ftpStationSelect.value);
-        } catch (e) {
-            ftpStationSelect.innerHTML = '<option value="kokx">Нью-Йорк Сити, NY (Default)</option>';
-            ftpStationSelect.disabled = false;
-            loadTimes('kokx');
-        }
+    const loading = document.getElementById('loadingOverlay');
+
+    // === INVENTORY API ===
+    async function refreshInventory() {
+        // Raw data
+        const rawRes = await fetch('/api/inventory/raw');
+        const rawItems = await rawRes.json();
+        const rawTable = document.getElementById('rawInventoryTable');
+        rawTable.innerHTML = rawItems.map(item => `
+            <tr>
+                <td><b>${item.station}</b></td>
+                <td>${item.date}</td>
+                <td>${item.downloaded_count || item.requested_count}</td>
+                <td><span class="status-dot bg-${item.status}"></span> ${item.status}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-primary" onclick="openPrepModal('${item.path.replace(/\\/g, '/')}')">
+                        <i class="fa-solid fa-gear"></i> Подготовить
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+
+        // Datasets
+        const dsRes = await fetch('/api/inventory/datasets');
+        const dsItems = await dsRes.json();
+        const dsTable = document.getElementById('datasetsInventoryTable');
+        dsTable.innerHTML = dsItems.map(item => `
+            <tr>
+                <td class="small"><code>${item.folder_name}</code></td>
+                <td>${item.station}</td>
+                <td>${item.sample_count}</td>
+                <td>${item.sequence_length}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-success" onclick="selectDatasetForTrain('${item.path.replace(/\\/g, '/')}')">
+                        <i class="fa-solid fa-brain"></i> В обучение
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+        
+        const dsSelect = document.getElementById('trainDatasetSelect');
+        dsSelect.innerHTML = dsItems.map(item => `<option value="${item.path}">${item.folder_name} (${item.station})</option>`).join('');
+
+        // Models
+        const modelRes = await fetch('/api/inventory/models');
+        const modelItems = await modelRes.json();
+        const modelTable = document.getElementById('modelsInventoryTable');
+        const modelSelect = document.getElementById('modelSelectionList');
+        
+        modelTable.innerHTML = modelItems.map(item => `
+            <tr>
+                <td><b>${item.folder_name}</b></td>
+                <td>${item.station}</td>
+                <td><code>${item.best_val_loss ? item.best_val_loss.toFixed(6) : 'N/A'}</code></td>
+                <td class="small">${item.timestamp_updated}</td>
+                <td>
+                    <button class="btn btn-sm btn-primary" onclick="loadModel('${item.path.replace(/\\/g, '/')}')">Использовать</button>
+                </td>
+            </tr>
+        `).join('');
+        
+        modelSelect.innerHTML = modelItems.map(item => `
+            <li><a class="dropdown-item" href="#" onclick="loadModel('${item.path.replace(/\\/g, '/')}')">${item.folder_name}</a></li>
+        `).join('');
     }
 
-    // Load FTP Times when station changes
-    async function loadTimes(stationCode) {
-        ftpTimeSelect.innerHTML = '<option value="latest">Загрузка срезов...</option>';
-        ftpTimeSelect.disabled = true;
-        try {
-            const res = await fetch(`/api/ftp/times?station=${stationCode}`);
-            const times = await res.json();
-            ftpTimeSelect.innerHTML = '<option value="latest">Самые свежие данные (Latest)</option>';
-            times.forEach(t => {
-                const opt = document.createElement('option');
-                opt.value = t.id;
-                opt.textContent = t.label;
-                ftpTimeSelect.appendChild(opt);
-            });
-            ftpTimeSelect.disabled = false;
-        } catch (e) {
-            ftpTimeSelect.innerHTML = '<option value="latest">Самые свежие данные (Latest)</option>';
-            ftpTimeSelect.disabled = false;
-        }
-    }
-
-    ftpStationSelect.addEventListener('change', (e) => loadTimes(e.target.value));
-
-    // Initialize
-    loadStations();
-    
-    // Set default date for download
-    document.getElementById('dlDate').valueAsDate = new Date();
-
-    // Helper for task polling
-    async function pollLogs(taskId, logsId, statusId) {
+    // === TASK POLLING ===
+    function pollTask(taskId, logsId, badgeId, statusContainerId) {
+        document.getElementById(statusContainerId).classList.remove('d-none');
         const logsEl = document.getElementById(logsId);
-        const statusEl = document.getElementById(statusId);
+        const badgeEl = document.getElementById(badgeId);
         
         const interval = setInterval(async () => {
-            try {
-                const res = await fetch(`/api/task/logs/${taskId}`);
-                const data = await res.json();
-                
-                logsEl.value = data.logs;
-                logsEl.scrollTop = logsEl.scrollHeight;
-                
-                statusEl.textContent = data.status.toUpperCase();
-                if (data.status === 'running') {
-                    statusEl.className = 'badge bg-primary';
-                } else if (data.status === 'finished') {
-                    statusEl.className = 'badge bg-success';
-                    clearInterval(interval);
-                } else if (data.status === 'failed') {
-                    statusEl.className = 'badge bg-danger';
-                    clearInterval(interval);
-                }
-            } catch (e) {
-                console.error("Polling error:", e);
+            const res = await fetch(`/api/task/logs/${taskId}`);
+            const data = await res.json();
+            logsEl.textContent = data.logs;
+            logsEl.scrollTop = logsEl.scrollHeight;
+            
+            if (badgeEl) badgeEl.textContent = data.status.toUpperCase();
+            
+            if (data.status !== 'running') {
                 clearInterval(interval);
+                refreshInventory();
             }
         }, 1500);
     }
 
-    // Download Form Handler
+    // === ACTIONS ===
+    function openPrepModal(path) {
+        document.getElementById('prepArchiveDir').value = path;
+        new bootstrap.Modal(document.getElementById('prepModal')).show();
+    }
+
+    function selectDatasetForTrain(path) {
+        document.getElementById('pane-models').classList.add('active');
+        document.getElementById('pane-datasets').classList.remove('active');
+        document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+        document.querySelector('[data-pane="models"]').classList.add('active');
+        document.getElementById('trainDatasetSelect').value = path;
+    }
+
+    async function loadModel(path) {
+        loading.style.display = 'flex';
+        const formData = new FormData();
+        formData.append('model_path', path);
+        const res = await fetch('/api/model/load', { method: 'POST', body: formData });
+        const data = await res.json();
+        loading.style.display = 'none';
+        
+        if (data.success) {
+            document.getElementById('activeModelName').textContent = path.split('/').pop();
+            alert(data.message);
+        } else {
+            alert("Ошибка: " + data.error);
+        }
+    }
+
+    // === FORMS ===
     document.getElementById('downloadForm').onsubmit = async (e) => {
         e.preventDefault();
-        const formData = new FormData(e.target);
-        try {
-            const res = await fetch('/api/task/download', { method: 'POST', body: formData });
-            const data = await res.json();
-            if (data.success) {
-                pollLogs('download', 'dlLogs', 'dlStatus');
-            } else {
-                alert(data.message);
-            }
-        } catch (err) { alert("Ошибка запуска задачи"); }
+        const res = await fetch('/api/task/download', { method: 'POST', body: new FormData(e.target) });
+        const data = await res.json();
+        if (data.success) pollTask('download', 'dlLogs', 'dlStatusBadge', 'dlTaskStatus');
     };
 
-    // Train Form Handler
+    document.getElementById('prepForm').onsubmit = async (e) => {
+        e.preventDefault();
+        bootstrap.Modal.getInstance(document.getElementById('prepModal')).hide();
+        const res = await fetch('/api/task/prepare', { method: 'POST', body: new FormData(e.target) });
+        const data = await res.json();
+        if (data.success) pollTask('prepare', 'prepLogs', null, 'prepTaskStatus');
+    };
+
     document.getElementById('trainForm').onsubmit = async (e) => {
         e.preventDefault();
-        const formData = new FormData(e.target);
-        try {
-            const res = await fetch('/api/task/train', { method: 'POST', body: formData });
-            const data = await res.json();
-            if (data.success) {
-                pollLogs('train', 'trainLogs', 'trainStatus');
-            } else {
-                alert(data.message);
-            }
-        } catch (err) { alert("Ошибка запуска задачи"); }
+        const res = await fetch('/api/task/train', { method: 'POST', body: new FormData(e.target) });
+        const data = await res.json();
+        if (data.success) pollTask('train', 'trainLogs', null, 'trainTaskStatus');
     };
 
-    // Sync download station select with FTP stations
-    const dlStationSelect = document.getElementById('dlStationSelect');
-    async function syncDlStations() {
-        const res = await fetch('/api/ftp/stations');
-        const stations = await res.json();
-        dlStationSelect.innerHTML = '';
-        stations.forEach(s => {
-            const opt = document.createElement('option');
-            opt.value = s.code;
-            opt.textContent = `${s.code.toUpperCase()} - ${s.name}`;
-            dlStationSelect.appendChild(opt);
-        });
-    }
-    syncDlStations();
+    // Inference Logic
+    const srcType = document.getElementById('srcType');
+    srcType.onchange = () => {
+        document.getElementById('ftpControls').style.display = srcType.value === 'ftp' ? 'block' : 'none';
+        document.getElementById('uploadControls').style.display = srcType.value === 'upload' ? 'block' : 'none';
+    };
 
-    form.onsubmit = async (e) => {
+    document.getElementById('nowcastForm').onsubmit = async (e) => {
         e.preventDefault();
         loading.style.display = 'flex';
-        
-        const formData = new FormData(form);
-        try {
-            const response = await fetch('/api/predict', {
-                method: 'POST',
-                body: formData
-            });
-            const data = await response.json();
-            
-            if (data.error) {
-                results.innerHTML = `<div class="alert alert-danger shadow-sm border-0"><i class="fa-solid fa-triangle-exclamation me-2"></i> Ошибка: ${data.error}</div>`;
-            } else {
-                renderResults(data);
-            }
-        } catch (err) {
-            results.innerHTML = `<div class="alert alert-danger shadow-sm border-0"><i class="fa-solid fa-triangle-exclamation me-2"></i> Ошибка соединения с сервером.</div>`;
-        } finally {
-            loading.style.display = 'none';
-        }
+        const res = await fetch('/api/predict', { method: 'POST', body: new FormData(e.target) });
+        const data = await res.json();
+        loading.style.display = 'none';
+        if (data.error) alert(data.error);
+        else renderResults(data);
     };
 
     function renderResults(data) {
-        let html = `
-            <div class="alert alert-light border shadow-sm mb-4 small py-2">
-                <i class="fa-solid fa-info-circle me-1"></i> Статус: <b>${data.status || 'Успешно'}</b>
-            </div>
-            <div class="row mb-4">
-                <div class="col-12"><h4 class="fw-bold mb-3"><i class="fa-solid fa-clock-rotate-left me-2"></i>История (последний час)</h4></div>
+        const container = document.getElementById('resultsContainer');
+        container.innerHTML = `
+            <div class="row g-3 mb-4">
+                <div class="col-12"><h5 class="fw-bold mb-3">История (T-60 до T-0)</h5></div>
                 ${data.history.map(img => `
                     <div class="col-md-3">
-                        <div class="radar-img-container shadow-sm">
-                            <img src="data:image/png;base64,${img.data}" alt="History">
-                            <div class="time-label small">${img.label}</div>
+                        <div class="card p-2 shadow-sm">
+                            <img src="data:image/png;base64,${img.data}" class="rounded">
+                            <div class="text-center small mt-2 fw-medium text-muted">${img.label}</div>
                         </div>
                     </div>
                 `).join('')}
             </div>
-            <hr class="my-4">
-            <div class="row">
-                <div class="col-12"><h4 class="fw-bold mb-3 text-primary"><i class="fa-solid fa-wand-magic-sparkles me-2"></i>Прогноз ИИ (на час вперед)</h4></div>
+            <div class="row g-3">
+                <div class="col-12"><h5 class="fw-bold mb-3 text-primary">Прогноз ИИ (T+15 до T+60)</h5></div>
                 ${data.forecast.map(img => `
                     <div class="col-md-3">
-                        <div class="radar-img-container shadow-sm border-top border-primary border-4">
-                            <img src="data:image/png;base64,${img.data}" alt="Forecast">
-                            <div class="time-label small">${img.label}</div>
+                        <div class="card p-2 shadow-sm border-top border-primary border-3">
+                            <img src="data:image/png;base64,${img.data}" class="rounded">
+                            <div class="text-center small mt-2 fw-bold text-primary">${img.label}</div>
                         </div>
                     </div>
                 `).join('')}
             </div>
         `;
-        results.innerHTML = html;
-        document.getElementById('statusBadge').innerHTML = `<i class="fa-solid fa-circle text-success me-1 small"></i> Обновлено в ${new Date().toLocaleTimeString()}`;
     }
+
+    // Init
+    async function loadStations() {
+        const res = await fetch('/api/ftp/stations');
+        const stations = await res.json();
+        const selects = ['ftpStationSelect', 'dlStationSelect'];
+        selects.forEach(id => {
+            const el = document.getElementById(id);
+            el.innerHTML = stations.map(s => `<option value="${s.code}">${s.code.toUpperCase()} - ${s.name}</option>`).join('');
+            if (id === 'ftpStationSelect') el.value = 'kokx';
+        });
+        loadTimes('kokx');
+    }
+
+    async function loadTimes(station) {
+        const res = await fetch(`/api/ftp/times?station=${station}`);
+        const times = await res.json();
+        const el = document.getElementById('ftpTimeSelect');
+        el.innerHTML = '<option value="latest">Latest Scan</option>' + times.map(t => `<option value="${t.id}">${t.label}</option>`).join('');
+    }
+
+    document.getElementById('ftpStationSelect').onchange = (e) => loadTimes(e.target.value);
+    document.getElementById('dlDate').valueAsDate = new Date();
+    
+    loadStations();
+    refreshInventory();
 </script>
 </body>
 </html>

@@ -19,9 +19,13 @@ sys.path.append(str(pathlib.Path(__file__).parent))
 from train_nowcasting_model import ConvLSTM
 from adapters import LocalDirectoryAdapter, RainViewerAdapter, NOAAFTPAdapter
 from map_visualization import generate_sequence_plots
+from metadata_utils import scan_inventory
 
 
 app = Flask(__name__, template_folder='../templates')
+app.config['RAW_DATA_DIR'] = 'data/raw/archive'
+app.config['DATASETS_DIR'] = 'data/processed_archive'
+app.config['MODELS_REGISTRY_DIR'] = 'models/registry'
 app.config['LOCAL_DATA_DIR'] = os.environ.get('RADAR_DATA_DIR', 'data/processed')
 
 # Глобальное хранилище для фоновых задач
@@ -209,6 +213,21 @@ def predict():
         return jsonify({'error': str(exc)}), 500
 
 
+@app.route('/api/inventory/raw', methods=['GET'])
+def get_raw_inventory():
+    return jsonify(scan_inventory(app.config['RAW_DATA_DIR']))
+
+
+@app.route('/api/inventory/datasets', methods=['GET'])
+def get_datasets_inventory():
+    return jsonify(scan_inventory(app.config['DATASETS_DIR']))
+
+
+@app.route('/api/inventory/models', methods=['GET'])
+def get_models_inventory():
+    return jsonify(scan_inventory(app.config['MODELS_REGISTRY_DIR']))
+
+
 @app.route('/api/task/download', methods=['POST'])
 def start_download():
     station = request.form.get('station', 'KOKX')
@@ -220,16 +239,46 @@ def start_download():
     return jsonify({'success': success, 'message': msg})
 
 
+@app.route('/api/task/prepare', methods=['POST'])
+def start_prepare():
+    archive_dir = request.form.get('archive_dir')
+    seq_len = request.form.get('seq_len', '8')
+    
+    if not archive_dir:
+        return jsonify({'success': False, 'message': 'Директория архива не указана'})
+    
+    cmd = ['bash', 'scripts/prepare.sh', seq_len, archive_dir]
+    success, msg = task_runner.run('prepare', cmd)
+    return jsonify({'success': success, 'message': msg})
+
+
 @app.route('/api/task/train', methods=['POST'])
 def start_train():
+    dataset_dir = request.form.get('dataset_dir')
     epochs = request.form.get('epochs', '10')
     batch_size = request.form.get('batch_size', '4')
     lr = request.form.get('lr', '1e-4')
     
-    # Сначала запуск подготовки данных, затем обучения
-    cmd = ['bash', '-c', f'bash scripts/prepare.sh 8 && bash scripts/train.sh {epochs} {batch_size} {lr}']
+    if not dataset_dir:
+        return jsonify({'success': False, 'message': 'Датасет не указан'})
+
+    cmd = ['bash', 'scripts/train.sh', epochs, batch_size, lr, dataset_dir]
     success, msg = task_runner.run('train', cmd)
     return jsonify({'success': success, 'message': msg})
+
+
+@app.route('/api/model/load', methods=['POST'])
+def load_model_from_registry():
+    model_path = request.form.get('model_path')
+    if not model_path:
+        return jsonify({'error': 'Путь к модели не указан'}), 400
+    
+    checkpoint = os.path.join(model_path, 'best_model.pt')
+    if not os.path.exists(checkpoint):
+        return jsonify({'error': 'Файл модели не найден'}), 404
+    
+    _load_model(checkpoint)
+    return jsonify({'success': True, 'message': f'Модель {os.path.basename(model_path)} загружена'})
 
 
 @app.route('/api/task/logs/<task_id>', methods=['GET'])
