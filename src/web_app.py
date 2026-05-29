@@ -3,7 +3,9 @@ import os
 import pathlib
 import base64
 import sys
-from typing import List, Optional, Tuple
+import subprocess
+import threading
+from typing import List, Optional, Tuple, Dict
 
 import numpy as np
 from flask import Flask, request, render_template, redirect, url_for, jsonify
@@ -11,7 +13,7 @@ from flask import Flask, request, render_template, redirect, url_for, jsonify
 import torch
 import torch.nn as nn
 
-# Add src to path if running as a script
+# Добавляем src в путь
 sys.path.append(str(pathlib.Path(__file__).parent))
 
 from train_nowcasting_model import ConvLSTM
@@ -21,6 +23,52 @@ from map_visualization import generate_sequence_plots
 
 app = Flask(__name__, template_folder='../templates')
 app.config['LOCAL_DATA_DIR'] = os.environ.get('RADAR_DATA_DIR', 'data/processed')
+
+# Глобальное хранилище для фоновых задач
+class TaskRunner:
+    def __init__(self):
+        self.tasks: Dict[str, Dict] = {}
+
+    def run(self, task_id: str, command: List[str]):
+        if task_id in self.tasks and self.tasks[task_id]['process'].poll() is None:
+            return False, "Задача уже запущена"
+
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
+        
+        self.tasks[task_id] = {
+            'process': process,
+            'logs': [],
+            'status': 'running'
+        }
+
+        def monitor():
+            for line in process.stdout:
+                self.tasks[task_id]['logs'].append(line)
+                if len(self.tasks[task_id]['logs']) > 500: # Храним последние 500 строк
+                    self.tasks[task_id]['logs'].pop(0)
+            
+            process.wait()
+            self.tasks[task_id]['status'] = 'finished' if process.returncode == 0 else 'failed'
+
+        threading.Thread(target=monitor, daemon=True).start()
+        return True, "Задача запущена"
+
+    def get_logs(self, task_id: str):
+        if task_id not in self.tasks:
+            return None
+        return {
+            'logs': "".join(self.tasks[task_id]['logs']),
+            'status': self.tasks[task_id]['status']
+        }
+
+task_runner = TaskRunner()
 
 # Configuration
 CHECKPOINT_PATH = os.environ.get('NOWCAST_MODEL_CHECKPOINT', 'models/checkpoints/best_model.pt')
@@ -159,6 +207,37 @@ def predict():
 
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/task/download', methods=['POST'])
+def start_download():
+    station = request.form.get('station', 'KOKX')
+    date = request.form.get('date', '')
+    count = request.form.get('count', '50')
+    
+    cmd = ['bash', 'scripts/download.sh', station, date, count]
+    success, msg = task_runner.run('download', cmd)
+    return jsonify({'success': success, 'message': msg})
+
+
+@app.route('/api/task/train', methods=['POST'])
+def start_train():
+    epochs = request.form.get('epochs', '10')
+    batch_size = request.form.get('batch_size', '4')
+    lr = request.form.get('lr', '1e-4')
+    
+    # Сначала запуск подготовки данных, затем обучения
+    cmd = ['bash', '-c', f'bash scripts/prepare.sh 8 && bash scripts/train.sh {epochs} {batch_size} {lr}']
+    success, msg = task_runner.run('train', cmd)
+    return jsonify({'success': success, 'message': msg})
+
+
+@app.route('/api/task/logs/<task_id>', methods=['GET'])
+def get_task_logs(task_id):
+    result = task_runner.get_logs(task_id)
+    if not result:
+        return jsonify({'error': 'Задача не найдена'}), 404
+    return jsonify(result)
 
 
 if __name__ == '__main__':

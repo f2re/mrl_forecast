@@ -171,17 +171,104 @@
 
         <!-- Main Content -->
         <main class="col-md-9 ms-sm-auto col-lg-10 main-content">
-            <div class="d-flex justify-content-between align-items-center mb-4">
-                <h2 class="fw-bold">Оперативный прогноз осадков</h2>
-                <div id="statusBadge" class="source-badge">
-                    <i class="fa-solid fa-circle text-success me-1 small"></i> Система готова
-                </div>
-            </div>
+            <ul class="nav nav-tabs mb-4" id="mainTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="predict-tab" data-bs-toggle="tab" data-bs-target="#predict" type="button" role="tab"><i class="fa-solid fa-chart-line me-1"></i> Прогноз</button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="download-tab" data-bs-toggle="tab" data-bs-target="#download" type="button" role="tab"><i class="fa-solid fa-download me-1"></i> Загрузка данных</button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="train-tab" data-bs-toggle="tab" data-bs-target="#train" type="button" role="tab"><i class="fa-solid fa-brain me-1"></i> Обучение</button>
+                </li>
+            </ul>
 
-            <!-- Dashboard Sections -->
-            <div id="resultsContainer">
-                <div class="alert alert-info border-0 shadow-sm">
-                    <i class="fa-solid fa-circle-info me-2"></i> Выберите источник данных слева и нажмите «Запустить» для получения актуальной информации.
+            <div class="tab-content" id="mainTabsContent">
+                <!-- Вкладка Прогноза -->
+                <div class="tab-pane fade show active" id="predict" role="tabpanel">
+                    <div class="d-flex justify-content-between align-items-center mb-4">
+                        <h2 class="fw-bold">Оперативный прогноз осадков</h2>
+                        <div id="statusBadge" class="source-badge">
+                            <i class="fa-solid fa-circle text-success me-1 small"></i> Система готова
+                        </div>
+                    </div>
+                    <div id="resultsContainer">
+                        <div class="alert alert-info border-0 shadow-sm">
+                            <i class="fa-solid fa-circle-info me-2"></i> Выберите источник данных слева и нажмите «Запустить» для получения актуальной информации.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Вкладка Загрузки -->
+                <div class="tab-pane fade" id="download" role="tabpanel">
+                    <h2 class="fw-bold mb-4">Скачивание архивных данных</h2>
+                    <div class="card mb-4">
+                        <div class="card-body">
+                            <form id="downloadForm" class="row g-3">
+                                <div class="col-md-4">
+                                    <label class="form-label fw-bold">Станция</label>
+                                    <select class="form-select" name="station" id="dlStationSelect">
+                                        <option value="KOKX">Загрузка...</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label fw-bold">Дата</label>
+                                    <input type="date" class="form-control" name="date" id="dlDate">
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label fw-bold">Кол-во файлов</label>
+                                    <input type="number" class="form-control" name="count" value="100">
+                                </div>
+                                <div class="col-md-2 d-flex align-items-end">
+                                    <button type="submit" class="btn btn-primary w-100">Начать</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                    <div class="card bg-dark text-light">
+                        <div class="card-header border-secondary d-flex justify-content-between align-items-center">
+                            <span><i class="fa-solid fa-terminal me-2"></i>Лог процесса</span>
+                            <span id="dlStatus" class="badge bg-secondary">Ожидание</span>
+                        </div>
+                        <div class="card-body p-0">
+                            <textarea id="dlLogs" class="form-control bg-dark text-light border-0 font-monospace small" rows="15" readonly style="resize: none;"></textarea>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Вкладка Обучения -->
+                <div class="tab-pane fade" id="train" role="tabpanel">
+                    <h2 class="fw-bold mb-4">Обучение собственной модели</h2>
+                    <div class="card mb-4">
+                        <div class="card-body">
+                            <form id="trainForm" class="row g-3">
+                                <div class="col-md-3">
+                                    <label class="form-label fw-bold">Эпохи</label>
+                                    <input type="number" class="form-control" name="epochs" value="10">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label fw-bold">Batch Size</label>
+                                    <input type="number" class="form-control" name="batch_size" value="4">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label fw-bold">Learning Rate</label>
+                                    <input type="text" class="form-control" name="lr" value="1e-4">
+                                </div>
+                                <div class="col-md-3 d-flex align-items-end">
+                                    <button type="submit" class="btn btn-success w-100">Запустить обучение</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                    <div class="card bg-dark text-light">
+                        <div class="card-header border-secondary d-flex justify-content-between align-items-center">
+                            <span><i class="fa-solid fa-terminal me-2"></i>Лог процесса обучения</span>
+                            <span id="trainStatus" class="badge bg-secondary">Ожидание</span>
+                        </div>
+                        <div class="card-body p-0">
+                            <textarea id="trainLogs" class="form-control bg-dark text-light border-0 font-monospace small" rows="15" readonly style="resize: none;"></textarea>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -269,6 +356,84 @@
 
     // Initialize
     loadStations();
+    
+    // Set default date for download
+    document.getElementById('dlDate').valueAsDate = new Date();
+
+    // Helper for task polling
+    async function pollLogs(taskId, logsId, statusId) {
+        const logsEl = document.getElementById(logsId);
+        const statusEl = document.getElementById(statusId);
+        
+        const interval = setInterval(async () => {
+            try {
+                const res = await fetch(`/api/task/logs/${taskId}`);
+                const data = await res.json();
+                
+                logsEl.value = data.logs;
+                logsEl.scrollTop = logsEl.scrollHeight;
+                
+                statusEl.textContent = data.status.toUpperCase();
+                if (data.status === 'running') {
+                    statusEl.className = 'badge bg-primary';
+                } else if (data.status === 'finished') {
+                    statusEl.className = 'badge bg-success';
+                    clearInterval(interval);
+                } else if (data.status === 'failed') {
+                    statusEl.className = 'badge bg-danger';
+                    clearInterval(interval);
+                }
+            } catch (e) {
+                console.error("Polling error:", e);
+                clearInterval(interval);
+            }
+        }, 1500);
+    }
+
+    // Download Form Handler
+    document.getElementById('downloadForm').onsubmit = async (e) => {
+        e.preventDefault();
+        const formData = new FormData(e.target);
+        try {
+            const res = await fetch('/api/task/download', { method: 'POST', body: formData });
+            const data = await res.json();
+            if (data.success) {
+                pollLogs('download', 'dlLogs', 'dlStatus');
+            } else {
+                alert(data.message);
+            }
+        } catch (err) { alert("Ошибка запуска задачи"); }
+    };
+
+    // Train Form Handler
+    document.getElementById('trainForm').onsubmit = async (e) => {
+        e.preventDefault();
+        const formData = new FormData(e.target);
+        try {
+            const res = await fetch('/api/task/train', { method: 'POST', body: formData });
+            const data = await res.json();
+            if (data.success) {
+                pollLogs('train', 'trainLogs', 'trainStatus');
+            } else {
+                alert(data.message);
+            }
+        } catch (err) { alert("Ошибка запуска задачи"); }
+    };
+
+    // Sync download station select with FTP stations
+    const dlStationSelect = document.getElementById('dlStationSelect');
+    async function syncDlStations() {
+        const res = await fetch('/api/ftp/stations');
+        const stations = await res.json();
+        dlStationSelect.innerHTML = '';
+        stations.forEach(s => {
+            const opt = document.createElement('option');
+            opt.value = s.code;
+            opt.textContent = `${s.code.toUpperCase()} - ${s.name}`;
+            dlStationSelect.appendChild(opt);
+        });
+    }
+    syncDlStations();
 
     form.onsubmit = async (e) => {
         e.preventDefault();
