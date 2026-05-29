@@ -327,10 +327,7 @@ def export_netcdf():
         return jsonify({'error': f'Ошибка экспорта: {str(e)}'}), 500
 
 
-@app.route('/api/predict', methods=['POST'])
-def predict():
-    global LAST_FORECAST
-
+@app.route('/api/task/logs/<task_id>', methods=['GET'])
 def get_task_logs(task_id):
     result = task_runner.get_logs(task_id)
     if not result:

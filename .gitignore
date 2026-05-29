@@ -6,8 +6,7 @@ venv/
 .env
 
 # Data and Models
-data/raw/*
-data/processed/*
+data/
 models/*
 checkpoints/
 *.npy
