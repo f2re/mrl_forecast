@@ -2,6 +2,8 @@ torch
 torchvision
 numpy<2.0
 flask
+xarray
+netCDF4
 matplotlib
 pandas
 scipy

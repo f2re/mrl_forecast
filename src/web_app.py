@@ -19,7 +19,9 @@ sys.path.append(str(pathlib.Path(__file__).parent))
 from train_nowcasting_model import ConvLSTM
 from adapters import LocalDirectoryAdapter, RainViewerAdapter, NOAAFTPAdapter
 from map_visualization import generate_sequence_plots
-from metadata_utils import scan_inventory
+from metadata_utils import scan_inventory, load_metadata
+from export_utils import save_forecast_to_netcdf
+import datetime
 
 
 app = Flask(__name__, template_folder='../templates')
@@ -203,6 +205,13 @@ def predict():
             label = f"T+{(idx + 1) * 15} мин"
             forecast.append({'data': b64, 'label': label})
             
+        # Сохраняем для экспорта
+        LAST_FORECAST = {
+            'data': pred_data * 70.0, # De-normalize back to dBZ
+            'base_time': datetime.datetime.now(), # В реальности брать время из радара
+            'station': request.form.get('ftp_station', 'unknown')
+        }
+            
         return jsonify({
             'history': history,
             'forecast': forecast,
@@ -251,37 +260,77 @@ def start_prepare():
     success, msg = task_runner.run('prepare', cmd)
     return jsonify({'success': success, 'message': msg})
 
+LAST_FORECAST = {}
 
 @app.route('/api/task/train', methods=['POST'])
 def start_train():
-    dataset_dir = request.form.get('dataset_dir')
+    dataset_dirs = request.form.getlist('dataset_dirs[]')
     epochs = request.form.get('epochs', '10')
     batch_size = request.form.get('batch_size', '4')
     lr = request.form.get('lr', '1e-4')
-    
-    if not dataset_dir:
-        return jsonify({'success': False, 'message': 'Датасет не указан'})
+    val_split = request.form.get('val_split', '0.2')
+    lead_time = request.form.get('lead_time', '4')
 
-    cmd = ['bash', 'scripts/train.sh', epochs, batch_size, lr, dataset_dir]
+    if not dataset_dirs:
+        return jsonify({'success': False, 'message': 'Датасеты не выбраны'})
+
+    dirs_str = ",".join(dataset_dirs)
+    cmd = ['bash', 'scripts/train.sh', epochs, batch_size, lr, dirs_str, val_split, lead_time]
     success, msg = task_runner.run('train', cmd)
     return jsonify({'success': success, 'message': msg})
 
 
-@app.route('/api/model/load', methods=['POST'])
-def load_model_from_registry():
-    model_path = request.form.get('model_path')
-    if not model_path:
-        return jsonify({'error': 'Путь к модели не указан'}), 400
-    
-    checkpoint = os.path.join(model_path, 'best_model.pt')
-    if not os.path.exists(checkpoint):
-        return jsonify({'error': 'Файл модели не найден'}), 404
-    
-    _load_model(checkpoint)
-    return jsonify({'success': True, 'message': f'Модель {os.path.basename(model_path)} загружена'})
+@app.route('/api/model/details/<model_id>', methods=['GET'])
+def get_model_details(model_id):
+    model_path = os.path.join(app.config['MODELS_REGISTRY_DIR'], model_id)
+    meta = load_metadata(model_path)
+    if not meta:
+        return jsonify({'error': 'Метаданные не найдены'}), 404
+
+    # Проверяем наличие графика
+    plot_path = os.path.join(model_path, 'learning_curve.png')
+    plot_b64 = None
+    if os.path.exists(plot_path):
+        with open(plot_path, "rb") as img_file:
+            plot_b64 = base64.b64encode(img_file.read()).decode('utf-8')
+
+    return jsonify({
+        'metadata': meta,
+        'plot': plot_b64
+    })
 
 
-@app.route('/api/task/logs/<task_id>', methods=['GET'])
+@app.route('/api/export/netcdf', methods=['GET'])
+def export_netcdf():
+    if not LAST_FORECAST or 'data' not in LAST_FORECAST:
+        return jsonify({'error': 'Прогноз не найден. Сначала запустите инференс.'}), 404
+
+    try:
+        export_dir = 'data/exports'
+        os.makedirs(export_dir, exist_ok=True)
+
+        station = LAST_FORECAST.get('station', 'unknown')
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"forecast_{station}_{timestamp}.nc"
+        file_path = os.path.join(export_dir, filename)
+
+        save_forecast_to_netcdf(
+            forecast_data=LAST_FORECAST['data'],
+            base_time=LAST_FORECAST['base_time'],
+            station_id=station,
+            output_path=file_path
+        )
+
+        from flask import send_file
+        return send_file(os.path.abspath(file_path), as_attachment=True)
+    except Exception as e:
+        return jsonify({'error': f'Ошибка экспорта: {str(e)}'}), 500
+
+
+@app.route('/api/predict', methods=['POST'])
+def predict():
+    global LAST_FORECAST
+
 def get_task_logs(task_id):
     result = task_runner.get_logs(task_id)
     if not result:

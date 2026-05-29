@@ -139,13 +139,16 @@
     <div id="pane-inference" class="section-pane active">
         <div class="d-flex justify-content-between align-items-center mb-4">
             <h2 class="fw-bold">Оперативный прогноз</h2>
-            <div class="dropdown">
-                <button class="btn btn-white shadow-sm dropdown-toggle" type="button" data-bs-toggle="dropdown">
-                    <i class="fa-solid fa-robot me-2"></i> Выбрать модель
+            <div class="d-flex gap-2">
+                <div class="dropdown">
+                    <button class="btn btn-white shadow-sm dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                        <i class="fa-solid fa-robot me-2 text-primary"></i> Выбрать модель
+                    </button>
+                    <ul class="dropdown-menu shadow border-0" id="modelSelectionList"></ul>
+                </div>
+                <button id="exportNetCDFBtn" class="btn btn-outline-primary shadow-sm d-none" onclick="exportToNetCDF()">
+                    <i class="fa-solid fa-file-export me-1"></i> Экспорт .nc
                 </button>
-                <ul class="dropdown-menu shadow border-0" id="modelSelectionList">
-                    <!-- Заполняется JS -->
-                </ul>
             </div>
         </div>
         
@@ -258,16 +261,21 @@
         <div class="row">
             <div class="col-lg-8">
                 <div class="card mb-4">
-                    <div class="card-header">Готовые датасеты (Numpy sequences)</div>
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span>Готовые датасеты (Numpy sequences)</span>
+                        <button class="btn btn-sm btn-success" onclick="goToTrainWithSelected()">
+                            <i class="fa-solid fa-brain me-1"></i> Обучить на выбранных
+                        </button>
+                    </div>
                     <div class="card-body p-0">
                         <table class="table table-hover mb-0">
                             <thead class="table-light">
                                 <tr>
+                                    <th width="40"><input type="checkbox" id="selectAllDatasets"></th>
                                     <th>ID</th>
                                     <th>Станция</th>
                                     <th>Сэмплов</th>
                                     <th>Seq Len</th>
-                                    <th>Действие</th>
                                 </tr>
                             </thead>
                             <tbody id="datasetsInventoryTable"></tbody>
@@ -284,7 +292,7 @@
             <div class="col-lg-4">
                 <div class="alert alert-info border-0">
                     <i class="fa-solid fa-lightbulb me-2"></i> 
-                    Выберите архив в «Менеджере данных» и нажмите «Подготовить», чтобы создать новый датасет.
+                    Выберите один или несколько датасетов и нажмите <b>«Обучить на выбранных»</b> для создания композитной модели.
                 </div>
             </div>
         </div>
@@ -296,28 +304,43 @@
         <div class="row">
             <div class="col-lg-4">
                 <div class="card mb-4">
-                    <div class="card-header">Запустить обучение</div>
+                    <div class="card-header">Настройка обучения</div>
                     <div class="card-body">
                         <form id="trainForm">
                             <div class="mb-3">
-                                <label class="form-label small">Выбор датасета</label>
-                                <select class="form-select" name="dataset_dir" id="trainDatasetSelect"></select>
+                                <label class="form-label small fw-bold">Выбранные датасеты</label>
+                                <div id="selectedDatasetsList" class="small text-muted mb-2">Ничего не выбрано</div>
+                                <div id="datasetCheckboxes" class="d-none"></div>
                             </div>
                             <div class="row g-2 mb-3">
                                 <div class="col-6">
-                                    <label class="form-label small">Эпохи</label>
-                                    <input type="number" class="form-control" name="epochs" value="10">
+                                    <label class="form-label small fw-bold">Эпохи</label>
+                                    <input type="number" class="form-control form-control-sm" name="epochs" value="10">
                                 </div>
                                 <div class="col-6">
-                                    <label class="form-label small">Батч</label>
-                                    <input type="number" class="form-control" name="batch_size" value="4">
+                                    <label class="form-label small fw-bold">Батч</label>
+                                    <input type="number" class="form-control form-control-sm" name="batch_size" value="4">
+                                </div>
+                            </div>
+                            <div class="row g-2 mb-3">
+                                <div class="col-6">
+                                    <label class="form-label small fw-bold">Val Split</label>
+                                    <input type="number" class="form-control form-control-sm" name="val_split" value="0.2" step="0.1">
+                                </div>
+                                <div class="col-6">
+                                    <label class="form-label small fw-bold">Lead Time</label>
+                                    <select class="form-select form-select-sm" name="lead_time">
+                                        <option value="4">1 час (4 шага)</option>
+                                        <option value="8">2 часа (8 шагов)</option>
+                                        <option value="12">3 часа (12 шагов)</option>
+                                    </select>
                                 </div>
                             </div>
                             <div class="mb-3">
-                                <label class="form-label small">LR</label>
-                                <input type="text" class="form-control" name="lr" value="1e-4">
+                                <label class="form-label small fw-bold">Learning Rate</label>
+                                <input type="text" class="form-control form-control-sm" name="lr" value="1e-4">
                             </div>
-                            <button type="submit" class="btn btn-success w-100">Начать обучение</button>
+                            <button type="submit" class="btn btn-success w-100">Запустить обучение</button>
                         </form>
                     </div>
                 </div>
@@ -335,11 +358,11 @@
                         <table class="table table-hover mb-0">
                             <thead class="table-light">
                                 <tr>
-                                    <th>Модель</th>
-                                    <th>Станция</th>
+                                    <th>ID Модели</th>
+                                    <th>Данные</th>
                                     <th>Loss</th>
-                                    <th>Дата создания</th>
-                                    <th>Действие</th>
+                                    <th>Создана</th>
+                                    <th></th>
                                 </tr>
                             </thead>
                             <tbody id="modelsInventoryTable"></tbody>
@@ -370,6 +393,39 @@
                     </div>
                     <button type="submit" class="btn btn-primary">Запустить процесс</button>
                 </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal for model details -->
+<div class="modal fade" id="modelDetailsModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content border-0 shadow-lg">
+            <div class="modal-header bg-dark text-white">
+                <h5 class="modal-title" id="mdlTitle">Детали модели</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body bg-light">
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="card h-100">
+                            <div class="card-header small">Кривая обучения</div>
+                            <div class="card-body p-1">
+                                <img id="mdlPlot" class="img-fluid rounded" src="">
+                                <div id="noPlotMsg" class="text-center py-5 text-muted d-none">График недоступен</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card h-100">
+                            <div class="card-header small">Метаданные (Provenance)</div>
+                            <div class="card-body">
+                                <div id="mdlMeta" class="small"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -431,22 +487,15 @@
         } else {
             dsTable.innerHTML = dsItems.map(item => `
                 <tr>
+                    <td><input type="checkbox" class="ds-check" value="${item.path}" data-name="${item.folder_name}"></td>
                     <td><code class="small text-primary">${item.folder_name}</code></td>
                     <td><span class="badge bg-light text-dark border">${item.station.toUpperCase()}</span></td>
                     <td><span class="badge bg-success-subtle text-success px-2 border-success-subtle">${item.sample_count} сэмплов</span></td>
                     <td><small class="fw-bold">${item.sequence_length} кадров</small></td>
-                    <td class="text-end">
-                        <button class="btn btn-sm btn-success py-1 px-3" onclick="selectDatasetForTrain('${item.path.replace(/\\/g, '/')}')">
-                            <i class="fa-solid fa-brain small me-1"></i> Обучить
-                        </button>
-                    </td>
                 </tr>
             `).join('');
         }
         
-        const dsSelect = document.getElementById('trainDatasetSelect');
-        dsSelect.innerHTML = dsItems.map(item => `<option value="${item.path}">${item.folder_name} (${item.station})</option>`).join('');
-
         // Models
         const modelRes = await fetch('/api/inventory/models');
         const modelItems = await modelRes.json();
@@ -459,12 +508,15 @@
         } else {
             modelTable.innerHTML = modelItems.map(item => `
                 <tr>
-                    <td><i class="fa-solid fa-microchip me-2 text-primary"></i> <b>${item.folder_name}</b></td>
-                    <td><span class="badge bg-light text-dark border">${item.station.toUpperCase()}</span></td>
-                    <td><code class="text-danger fw-bold">${item.best_val_loss ? item.best_val_loss.toFixed(5) : '---'}</code></td>
-                    <td><small class="text-muted">${new Date(item.timestamp_updated).toLocaleString()}</small></td>
+                    <td class="small"><b>${item.folder_name}</b></td>
+                    <td><span class="badge bg-light text-muted border">${item.station.toUpperCase()}</span></td>
+                    <td><code class="text-danger fw-bold">${item.metrics ? item.metrics.best_val_loss.toFixed(5) : '---'}</code></td>
+                    <td><small class="text-muted">${new Date(item.timestamp_created || item.timestamp_updated).toLocaleDateString()}</small></td>
                     <td class="text-end">
-                        <button class="btn btn-sm btn-primary py-1 px-3" onclick="loadModel('${item.path.replace(/\\/g, '/')}')">Загрузить</button>
+                        <button class="btn btn-sm btn-outline-secondary me-1" onclick="showModelDetails('${item.folder_name}')">
+                            <i class="fa-solid fa-circle-info"></i>
+                        </button>
+                        <button class="btn btn-sm btn-primary" onclick="loadModel('${item.path.replace(/\\/g, '/')}')">Использовать</button>
                     </td>
                 </tr>
             `).join('');
@@ -477,6 +529,73 @@
             `).join('');
         }
     }
+
+    function goToTrainWithSelected() {
+        const selected = Array.from(document.querySelectorAll('.ds-check:checked'));
+        if (selected.length === 0) {
+            alert("Выберите хотя бы один датасет");
+            return;
+        }
+        
+        document.getElementById('selectedDatasetsList').innerHTML = selected.map(el => `<div class="badge bg-info me-1">${el.getAttribute('data-name')}</div>`).join('');
+        
+        // Fill hidden checkboxes in the form
+        const container = document.getElementById('datasetCheckboxes');
+        container.innerHTML = selected.map(el => `<input type="checkbox" name="dataset_dirs[]" value="${el.value}" checked>`).join('');
+        
+        // Switch pane
+        document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+        document.querySelector('[data-pane="models"]').classList.add('active');
+        document.querySelectorAll('.section-pane').forEach(p => p.classList.remove('active'));
+        document.getElementById('pane-models').classList.add('active');
+    }
+
+    async function showModelDetails(modelId) {
+        const res = await fetch(`/api/model/details/${modelId}`);
+        const data = await res.json();
+        
+        document.getElementById('mdlTitle').textContent = `Модель: ${modelId}`;
+        const plotImg = document.getElementById('mdlPlot');
+        if (data.plot) {
+            plotImg.src = `data:image/png;base64,${data.plot}`;
+            plotImg.classList.remove('d-none');
+            document.getElementById('noPlotMsg').classList.add('d-none');
+        } else {
+            plotImg.classList.add('d-none');
+            document.getElementById('noPlotMsg').classList.remove('d-none');
+        }
+        
+        const meta = data.metadata;
+        document.getElementById('mdlMeta').innerHTML = `
+            <p><b>ID:</b> ${meta.model_id}</p>
+            <p><b>Архитектура:</b> ConvLSTM</p>
+            <p><b>Эпох:</b> ${meta.hyperparameters.epochs}</p>
+            <p><b>Batch Size:</b> ${meta.hyperparameters.batch_size}</p>
+            <p><b>Val Split:</b> ${meta.hyperparameters.val_split}</p>
+            <p><b>Lead Time:</b> ${meta.hyperparameters.target_length} шагов</p>
+            <hr>
+            <h6>Данные обучения:</h6>
+            <ul class="list-unstyled">
+                ${meta.training_data.map(d => `<li><i class="fa-solid fa-database me-2 small"></i> ${d.dataset_id} (${d.station})</li>`).join('')}
+            </ul>
+            <hr>
+            <h6>Результаты:</h6>
+            <p class="text-danger fw-bold">Best Val Loss: ${meta.metrics ? meta.metrics.best_val_loss.toFixed(6) : 'N/A'}</p>
+        `;
+        
+        new bootstrap.Modal(document.getElementById('modelDetailsModal')).show();
+    }
+
+    async function exportToNetCDF() {
+        window.location.href = '/api/export/netcdf';
+    }
+
+    // Update Predict Handler to show export button
+    const originalRenderResults = renderResults;
+    renderResults = (data) => {
+        originalRenderResults(data);
+        document.getElementById('exportNetCDFBtn').classList.remove('d-none');
+    };
 
     // === TASK POLLING ===
     function pollTask(taskId, logsId, badgeId, statusContainerId) {
