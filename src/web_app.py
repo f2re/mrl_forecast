@@ -1,3 +1,4 @@
+print("DEBUG: Starting imports...")
 import io
 import os
 import pathlib
@@ -7,21 +8,32 @@ import subprocess
 import threading
 from typing import List, Optional, Tuple, Dict
 
+print("DEBUG: Importing numpy...")
 import numpy as np
+print("DEBUG: Importing flask...")
 from flask import Flask, request, render_template, redirect, url_for, jsonify
 
+print("DEBUG: Importing torch...")
 import torch
 import torch.nn as nn
 
 # Добавляем src в путь
 sys.path.append(str(pathlib.Path(__file__).parent))
 
+print("DEBUG: Importing local modules...")
+print("DEBUG: Importing ConvLSTM...")
 from train_nowcasting_model import ConvLSTM
+print("DEBUG: Importing adapters...")
 from adapters import LocalDirectoryAdapter, RainViewerAdapter, NOAAFTPAdapter
+print("DEBUG: Importing generate_sequence_plots...")
 from map_visualization import generate_sequence_plots
+print("DEBUG: Importing metadata_utils...")
 from metadata_utils import scan_inventory, load_metadata
+print("DEBUG: Importing export_utils...")
 from export_utils import save_forecast_to_netcdf
 import datetime
+
+print("DEBUG: Imports finished.")
 
 
 app = Flask(__name__, template_folder='../templates')
@@ -153,7 +165,9 @@ def get_ftp_times():
 
 @app.route('/api/predict', methods=['POST'])
 def predict():
+    global LAST_FORECAST
     source_type = request.form.get('source_type')
+    station_code = request.form.get('ftp_station', 'kokx')
     status_msg = "Успешно"
     
     try:
@@ -171,7 +185,6 @@ def predict():
             array, status_msg = adapter.get_latest_sequence(INPUT_LENGTH)
         
         elif source_type == 'ftp':
-            station_code = request.form.get('ftp_station', 'kokx')
             time_id = request.form.get('ftp_time', 'latest')
             adapter = NOAAFTPAdapter()
             array, status_msg = adapter.get_latest_sequence(INPUT_LENGTH, station_code=station_code, end_file_id=time_id)
@@ -190,7 +203,7 @@ def predict():
         in_data = tensor_input.cpu().squeeze(0).squeeze(1).numpy()
         pred_data = preds.cpu().squeeze(0).squeeze(1).numpy()
         
-        png_list = generate_sequence_plots(in_data, pred_data, INPUT_LENGTH)
+        png_list = generate_sequence_plots(in_data, pred_data, INPUT_LENGTH, station_code=station_code)
         
         # Prepare JSON response
         history = []
@@ -220,6 +233,19 @@ def predict():
 
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/model/load', methods=['POST'])
+def load_model_route():
+    model_path = request.form.get('model_path')
+    if not model_path:
+        return jsonify({'error': 'Путь к модели не указан'}), 400
+    
+    try:
+        _load_model(model_path)
+        return jsonify({'success': True, 'message': f'Модель {os.path.basename(model_path)} успешно загружена'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/inventory/raw', methods=['GET'])

@@ -188,10 +188,29 @@
             </div>
             <div class="col-lg-9">
                 <div id="resultsContainer">
-                    <div class="card">
-                        <div class="card-body text-center py-5">
-                            <i class="fa-solid fa-satellite-dish fa-3x text-muted mb-3"></i>
-                            <p class="text-muted">Готов к работе. Настройте источник и запустите прогноз.</p>
+                    <div class="card shadow-sm">
+                        <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0 fw-bold"><i class="fa-solid fa-satellite-dish text-primary me-2"></i>Радарный плеер</h5>
+                            <span id="playerTimeLabel" class="badge bg-primary fs-6">Ожидание данных</span>
+                        </div>
+                        <div class="card-body text-center p-0 position-relative" style="background: #e2e8f0; min-height: 500px;">
+                            <img id="radarPlayerImg" src="" style="width: 100%; height: auto; display: none;">
+                            <div id="playerPlaceholder" class="py-5 my-5 text-muted">
+                                <i class="fa-solid fa-map-location-dot fa-4x mb-3 opacity-50"></i>
+                                <p>Запустите прогноз для отображения карты</p>
+                            </div>
+                        </div>
+                        <div class="card-footer bg-white">
+                            <div class="d-flex align-items-center">
+                                <button id="btnPlayPause" class="btn btn-primary me-3" disabled>
+                                    <i class="fa-solid fa-play"></i>
+                                </button>
+                                <input type="range" class="form-range w-100" id="timeSlider" min="0" max="0" value="0" disabled>
+                            </div>
+                            <div class="d-flex justify-content-between mt-2 px-1">
+                                <small class="text-muted fw-bold">История (-60 мин)</small>
+                                <small class="text-primary fw-bold">Прогноз (+60 мин)</small>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -590,14 +609,80 @@
         window.location.href = '/api/export/netcdf';
     }
 
-    // Update Predict Handler to show export button
-    const originalRenderResults = renderResults;
-    renderResults = (data) => {
-        originalRenderResults(data);
-        document.getElementById('exportNetCDFBtn').classList.remove('d-none');
-    };
+    let playerFrames = [];
+    let playerLabels = [];
+    let currentFrame = 0;
+    let playInterval = null;
 
-    // === TASK POLLING ===
+    function renderResults(data) {
+        playerFrames = [];
+        playerLabels = [];
+        
+        // Сбор кадров в единый массив
+        data.history.forEach(item => {
+            playerFrames.push(`data:image/png;base64,${item.data}`);
+            playerLabels.push(item.label);
+        });
+        data.forecast.forEach(item => {
+            playerFrames.push(`data:image/png;base64,${item.data}`);
+            playerLabels.push(item.label);
+        });
+
+        const maxIdx = playerFrames.length - 1;
+        const slider = document.getElementById('timeSlider');
+        const playBtn = document.getElementById('btnPlayPause');
+        
+        document.getElementById('playerPlaceholder').style.display = 'none';
+        document.getElementById('radarPlayerImg').style.display = 'block';
+        
+        slider.disabled = false;
+        slider.max = maxIdx;
+        playBtn.disabled = false;
+        
+        // Сброс на первый кадр прогноза (сейчас)
+        setFrame(data.history.length - 1); 
+
+        // Показываем кнопку экспорта
+        document.getElementById('exportNetCDFBtn').classList.remove('d-none');
+    }
+
+    function setFrame(index) {
+        currentFrame = index;
+        document.getElementById('timeSlider').value = index;
+        document.getElementById('radarPlayerImg').src = playerFrames[index];
+        
+        const labelBadge = document.getElementById('playerTimeLabel');
+        labelBadge.textContent = playerLabels[index];
+        // Визуальное разделение истории и будущего
+        labelBadge.className = playerLabels[index].includes('T+') 
+            ? 'badge bg-danger fs-6' 
+            : 'badge bg-primary fs-6';
+    }
+
+    document.getElementById('timeSlider').addEventListener('input', (e) => {
+        pauseAnimation();
+        setFrame(parseInt(e.target.value));
+    });
+
+    document.getElementById('btnPlayPause').addEventListener('click', () => {
+        if (playInterval) pauseAnimation();
+        else playAnimation();
+    });
+
+    function playAnimation() {
+        document.getElementById('btnPlayPause').innerHTML = '<i class="fa-solid fa-pause"></i>';
+        playInterval = setInterval(() => {
+            let nextFrame = currentFrame + 1;
+            if (nextFrame >= playerFrames.length) nextFrame = 0; // Зацикливание
+            setFrame(nextFrame);
+        }, 800); // 800мс на кадр
+    }
+
+    function pauseAnimation() {
+        clearInterval(playInterval);
+        playInterval = null;
+        document.getElementById('btnPlayPause').innerHTML = '<i class="fa-solid fa-play"></i>';
+    }
     function pollTask(taskId, logsId, badgeId, statusContainerId) {
         document.getElementById(statusContainerId).classList.remove('d-none');
         const logsEl = document.getElementById(logsId);
@@ -687,34 +772,6 @@
         if (data.error) alert(data.error);
         else renderResults(data);
     };
-
-    function renderResults(data) {
-        const container = document.getElementById('resultsContainer');
-        container.innerHTML = `
-            <div class="row g-3 mb-4">
-                <div class="col-12"><h5 class="fw-bold mb-3">История (T-60 до T-0)</h5></div>
-                ${data.history.map(img => `
-                    <div class="col-md-3">
-                        <div class="card p-2 shadow-sm">
-                            <img src="data:image/png;base64,${img.data}" class="rounded">
-                            <div class="text-center small mt-2 fw-medium text-muted">${img.label}</div>
-                        </div>
-                    </div>
-                `).join('')}
-            </div>
-            <div class="row g-3">
-                <div class="col-12"><h5 class="fw-bold mb-3 text-primary">Прогноз ИИ (T+15 до T+60)</h5></div>
-                ${data.forecast.map(img => `
-                    <div class="col-md-3">
-                        <div class="card p-2 shadow-sm border-top border-primary border-3">
-                            <img src="data:image/png;base64,${img.data}" class="rounded">
-                            <div class="text-center small mt-2 fw-bold text-primary">${img.label}</div>
-                        </div>
-                    </div>
-                `).join('')}
-            </div>
-        `;
-    }
 
     // Init
     async function loadStations() {

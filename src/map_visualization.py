@@ -1,31 +1,31 @@
+print("DEBUG: map_visualization: starting imports")
 import io
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib import colors, cm
+from matplotlib import colors
+print("DEBUG: map_visualization: importing contextily")
+import contextily as ctx
+print("DEBUG: map_visualization: importing pyproj")
+from pyproj import Transformer
 from typing import List, Tuple
+print("DEBUG: map_visualization: imports finished")
+
+# Географические координаты радаров (Долгота, Широта)
+RADAR_COORDS = {
+    'kokx': (-72.86, 40.86),  # Нью-Йорк
+    'kdtx': (-83.47, 42.69),  # Детройт
+    'klot': (-88.08, 41.60),  # Чикаго
+    'kamx': (-80.41, 25.61),  # Майами
+    'default': (0.0, 0.0)     # Fallback
+}
 
 def get_radar_colormap():
-    """Returns a standard professional dBZ colormap and norm."""
     clevs = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70]
-    ccols = [
-        '#ffffff', # 0-5
-        '#00ecec', # 5-10
-        '#01a0f6', # 10-15
-        '#0000f6', # 15-20
-        '#00ff00', # 20-25
-        '#00c800', # 25-30
-        '#009000', # 30-35
-        '#ffff00', # 35-40
-        '#e7c000', # 40-45
-        '#ff9000', # 45-50
-        '#ff0000', # 50-55
-        '#d60000', # 55-60
-        '#c00000', # 60-65
-        '#ff00ff', # 65-70
-        '#9955c9'  # 70+
-    ]
+    ccols = ['#ffffff00', '#00ecec', '#01a0f6', '#0000f6', '#00ff00', '#00c800', 
+             '#009000', '#ffff00', '#e7c000', '#ff9000', '#ff0000', '#d60000', 
+             '#c00000', '#ff00ff', '#9955c9'] # Первый цвет прозрачный для пустых зон
     cmap = colors.ListedColormap(ccols)
     norm = colors.BoundaryNorm(clevs, cmap.N)
     return cmap, norm
@@ -33,48 +33,42 @@ def get_radar_colormap():
 def create_radar_plot(
     data: np.ndarray, 
     title: str, 
-    center: Tuple[float, float] = (0, 0), 
+    station_code: str = 'kokx', 
     max_range_km: float = 250.0
 ) -> bytes:
-    """
-    Generates a professional radar plot with MRL circles and radii.
-    Returns PNG bytes.
-    """
     cmap, norm = get_radar_colormap()
     
-    fig, ax = plt.subplots(figsize=(6, 6), dpi=100)
+    # Скрываем нули (делаем прозрачными для наложения на карту)
+    data = np.ma.masked_where(data < 1.0, data)
     
-    # Plot radar data
-    # Assuming data is square grid covering [-max_range, max_range]
-    extent = [-max_range_km, max_range_km, -max_range_km, max_range_km]
-    im = ax.imshow(data, cmap=cmap, norm=norm, extent=extent, origin='upper')
+    fig, ax = plt.subplots(figsize=(8, 8), dpi=100)
     
-    # Draw MRL range rings
-    rings = [50, 100, 150, 200, 250]
-    for r in rings:
-        circle = plt.Circle((0, 0), r, color='gray', fill=False, linestyle='--', alpha=0.5, linewidth=0.8)
-        ax.add_patch(circle)
-        ax.text(0, r + 2, f"{r} km", color='gray', fontsize=8, ha='center')
+    # Трансформация в Web Mercator (EPSG:3857) для Contextily
+    lon, lat = RADAR_COORDS.get(station_code.lower(), RADAR_COORDS['default'])
+    transformer = Transformer.from_crs("epsg:4326", "epsg:3857", always_xy=True)
+    center_x, center_y = transformer.transform(lon, lat)
+    
+    offset_m = max_range_km * 1000 # Перевод км в метры
+    extent = [center_x - offset_m, center_x + offset_m, center_y - offset_m, center_y + offset_m]
+    
+    # Отрисовка МРЛ поверх карты
+    im = ax.imshow(data, cmap=cmap, norm=norm, extent=extent, origin='upper', alpha=0.6, zorder=2)
+    
+    # Добавление картографической основы (с городами и рельефом)
+    try:
+        ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron, zorder=1)
+    except Exception as e:
+        print(f"Ошибка загрузки карты: {e}")
 
-    # Draw radii (azimuth lines)
-    for angle in range(0, 360, 45):
-        rad = np.radians(angle)
-        ax.plot([0, max_range_km * np.sin(rad)], [0, max_range_km * np.cos(rad)], color='gray', alpha=0.3, linewidth=0.5)
+    # Маркер станции
+    ax.plot(center_x, center_y, 'k+', markersize=12, zorder=3)
+    ax.text(center_x + 5000, center_y + 5000, station_code.upper(), weight='bold', fontsize=12, zorder=3)
 
-    # Station marker
-    ax.plot(0, 0, 'k+', markersize=10)
+    ax.set_title(title, fontsize=14, pad=15)
+    ax.axis('off') # Отключаем оси координат
     
-    ax.set_title(title)
-    ax.set_xlabel("Distance (km)")
-    ax.set_ylabel("Distance (km)")
-    
-    # Add colorbar
-    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label('Reflectivity (dBZ)')
-    
-    # Save to buffer
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', bbox_inches='tight')
+    fig.savefig(buf, format='png', bbox_inches='tight', transparent=True)
     plt.close(fig)
     buf.seek(0)
     return buf.read()
@@ -82,21 +76,19 @@ def create_radar_plot(
 def generate_sequence_plots(
     input_seq: np.ndarray, 
     pred_seq: np.ndarray, 
-    input_len: int
+    input_len: int,
+    station_code: str = 'kokx'
 ) -> List[bytes]:
-    """Generates a list of PNG images for history and forecast."""
     images = []
-    
-    # History
+    # История
     for i in range(input_seq.shape[0]):
         lead_time = (input_len - i - 1) * -15
-        img = create_radar_plot(input_seq[i] * 70.0, f"History T{lead_time if lead_time != 0 else '-0'} min")
-        images.append(img)
+        label = f"История (T{lead_time} мин)" if lead_time != 0 else "Сейчас (T-0)"
+        images.append(create_radar_plot(input_seq[i] * 70.0, label, station_code))
         
-    # Forecast
+    # Прогноз
     for i in range(pred_seq.shape[0]):
         lead_time = (i + 1) * 15
-        img = create_radar_plot(pred_seq[i] * 70.0, f"Forecast T+{lead_time} min")
-        images.append(img)
+        images.append(create_radar_plot(pred_seq[i] * 70.0, f"Прогноз ИИ (T+{lead_time} мин)", station_code))
         
     return images
