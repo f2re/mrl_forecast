@@ -1,4 +1,7 @@
 print("DEBUG: Starting imports...")
+import matplotlib
+matplotlib.use('Agg')
+from map_visualization import generate_sequence_plots
 import io
 import os
 import pathlib
