@@ -81,26 +81,28 @@ class ConvLSTM(nn.Module):
         self.input_dim = input_channels if input_channels is not None else input_dim
         self.hidden_dim = hidden_channels if hidden_channels is not None else hidden_dim
         if self.hidden_dim is None:
-            self.hidden_dim = [16, 1]
+            self.hidden_dim = [16, 32]
             
-        self.num_layers = num_layers if num_layers is not None else len(self.hidden_dim)
+        self.num_layers = len(self.hidden_dim)
         self.batch_first = batch_first
         self.bias = bias
         self.output_steps = output_steps
         
         self.kernel_size = self._check_kernel_size_consistency(kernel_size)
         self.kernel_size = self._extend_for_multilayer(self.kernel_size, self.num_layers)
-        self.hidden_dim = self._extend_for_multilayer(self.hidden_dim, self.num_layers)
         
         if not len(self.kernel_size) == len(self.hidden_dim) == self.num_layers:
             raise ValueError('Inconsistent list lengths.')
             
-        cell_list = []
+        cells = []
         for i in range(0, self.num_layers):
             cur_input_dim = self.input_dim if i == 0 else self.hidden_dim[i - 1]
-            cell_list.append(ConvLSTMCell(input_dim=cur_input_dim, hidden_dim=self.hidden_dim[i],
+            cells.append(ConvLSTMCell(input_dim=cur_input_dim, hidden_dim=self.hidden_dim[i],
                                           kernel_size=self.kernel_size[i], bias=self.bias))
-        self.cell_list = nn.ModuleList(cell_list)
+        self.cells = nn.ModuleList(cells)
+        
+        # Final convolution to map hidden state back to input dimension
+        self.output_conv = nn.Conv2d(in_channels=self.hidden_dim[-1], out_channels=self.input_dim, kernel_size=1)
 
     def forward(self, input_tensor, hidden_state=None):
         if not self.batch_first:
@@ -123,7 +125,7 @@ class ConvLSTM(nn.Module):
             h_state, c_state = hidden_state[layer_idx]
             output_inner = []
             for t in range(seq_len):
-                h_state, c_state = self.cell_list[layer_idx](input_tensor=cur_layer_input[:, t, :, :, :], cur_state=[h_state, c_state])
+                h_state, c_state = self.cells[layer_idx](input_tensor=cur_layer_input[:, t, :, :, :], cur_state=[h_state, c_state])
                 output_inner.append(h_state)
             
             layer_output = torch.stack(output_inner, dim=1)
@@ -132,40 +134,44 @@ class ConvLSTM(nn.Module):
             last_state_list.append([h_state, c_state])
             
         # Prediction Phase (Autoregressive)
-        # If output_steps is defined, we generate future steps
         if self.output_steps is not None:
             predictions = []
-            # We take the last output of the encoding phase as our first input for prediction
-            # Or use the last frame of the input tensor if input_dim matches output_dim
-            # Here we assume last layer output is what we want to predict
-            current_input = layer_output_list[-1][:, -1, :, :, :]
+            # We take the last hidden state and output to start prediction
+            current_h = layer_output_list[-1][:, -1, :, :, :]
             
             for _ in range(self.output_steps):
-                # Feed it back through all layers
-                prev_h = current_input
+                # Apply output_conv to the last hidden state to get the predicted frame
+                # which will be used as input for the next step
+                pred_frame = self.output_conv(current_h)
+                predictions.append(pred_frame)
+                
+                # Feed the predicted frame back through all layers
+                prev_layer_h = pred_frame
                 for layer_idx in range(self.num_layers):
                     h_s, c_s = last_state_list[layer_idx]
-                    h_s, c_s = self.cell_list[layer_idx](input_tensor=prev_h, cur_state=[h_s, c_s])
+                    h_s, c_s = self.cells[layer_idx](input_tensor=prev_layer_h, cur_state=[h_s, c_s])
                     last_state_list[layer_idx] = [h_s, c_s]
-                    prev_h = h_s
+                    prev_layer_h = h_s
                 
-                # The output of the last layer is our prediction for this step
-                predictions.append(prev_h)
-                current_input = prev_h
+                current_h = prev_layer_h
                 
             prediction_tensor = torch.stack(predictions, dim=1)
             if not self.batch_first:
                 return prediction_tensor.permute(1, 0, 2, 3, 4), last_state_list
             return prediction_tensor, last_state_list
 
+        # If not predicting steps, apply output_conv to the entire sequence
+        final_output = self.output_conv(layer_output_list[-1].view(-1, self.hidden_dim[-1], h, w))
+        final_output = final_output.view(b, seq_len, self.input_dim, h, w)
+        
         if not self.batch_first:
-            return layer_output_list[-1].permute(1, 0, 2, 3, 4), last_state_list
-        return layer_output_list[-1], last_state_list
+            return final_output.permute(1, 0, 2, 3, 4), last_state_list
+        return final_output, last_state_list
 
     def _init_hidden(self, batch_size, image_size):
         init_states = []
         for i in range(self.num_layers):
-            init_states.append(self.cell_list[i].init_hidden(batch_size, image_size))
+            init_states.append(self.cells[i].init_hidden(batch_size, image_size))
         return init_states
 
     @staticmethod
