@@ -23,10 +23,16 @@ class RadarSequenceDataset(Dataset):
         self.files = sorted(list(self.data_dir.glob('*.npy')))
         self.input_length = input_length
         self.target_length = target_length
-        
+
+        if len(self.files) > 0:
+            # Check the first file to verify sequence length
+            test_data = np.load(self.files[0])
+            actual_len = test_data.shape[0]
+            if actual_len < (input_length + target_length):
+                raise ValueError(f"Dataset sequences (len={actual_len}) are shorter than requested input+target ({input_length}+{target_length})")
+
     def __len__(self):
         return len(self.files)
-    
     def __getitem__(self, idx):
         # Load [T, H, W]
         data = np.load(self.files[idx]).astype(np.float32)
@@ -266,8 +272,24 @@ def main():
         return
 
     full_dataset = ConcatDataset(all_datasets)
-    num_val = int(len(full_dataset) * args.val_split)
-    num_train = len(full_dataset) - num_val
+    total_samples = len(full_dataset)
+    
+    if total_samples == 0:
+        print("Error: Total number of samples is 0. Cannot proceed with training.")
+        return
+
+    num_val = int(total_samples * args.val_split)
+    num_train = total_samples - num_val
+    
+    # Ensure at least one sample in each split if possible
+    if num_train == 0 and total_samples > 0:
+        num_train = 1
+        num_val = total_samples - 1
+    
+    if num_train == 0:
+        print("Error: Training set is empty. Decrease val-split or add more data.")
+        return
+
     train_ds, val_ds = torch.utils.data.random_split(full_dataset, [num_train, num_val])
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)

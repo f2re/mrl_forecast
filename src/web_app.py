@@ -368,21 +368,47 @@ def get_task_logs(task_id):
 def preview_data():
     station = request.args.get('station', 'KOKX').upper()
     date_str = request.args.get('date')
-    
+
     if not date_str:
         return jsonify({'error': 'Дата не указана'}), 400
-        
+
     try:
-        import nexradaws
-        conn = nexradaws.NexradAwsInterface()
-        dt = datetime.datetime.strptime(date_str, '%Y-%m-%d')
-        scans = conn.get_avail_scans(dt.year, dt.month, dt.day, station)
-        
-        # Группируем по часам для наглядности
+        # Attempt to import the dependency and provide guidance if missing
+        try:
+            import nexradaws  # type: ignore
+        except ImportError:
+            return jsonify({
+                'error': 'Библиотека nexradaws не установлена. Установите её командой `pip install nexradaws`.'
+            }), 500
+
+        # Attempt to create the AWS interface; catch initialization errors
+        try:
+            conn = nexradaws.NexradAwsInterface()
+        except Exception as init_exc:
+            return jsonify({
+                'error': f'Ошибка инициализации NexradAwsInterface: {init_exc}'
+            }), 500
+
+        # Validate the date format
+        try:
+            dt = datetime.datetime.strptime(date_str, '%Y-%m-%d')
+        except ValueError:
+            return jsonify({'error': 'Неверный формат даты. Используйте YYYY‑MM‑DD.'}), 400
+
+        # Fetch scans and handle API errors
+        try:
+            scans = conn.get_avail_scans(dt.year, dt.month, dt.day, station)
+        except Exception as fetch_exc:
+            return jsonify({'error': f'Не удалось получить список сканов: {fetch_exc}'}), 500
+
+        # Group scans by hour
         availability = [0] * 24
         for scan in scans:
-            availability[scan.scan_time.hour] += 1
-            
+            try:
+                availability[scan.scan_time.hour] += 1
+            except AttributeError:
+                continue
+
         return jsonify({
             'station': station,
             'date': date_str,
@@ -391,6 +417,7 @@ def preview_data():
             'has_data': len(scans) > 0
         })
     except Exception as e:
+        # Generic fallback for unexpected errors
         return jsonify({'error': str(e)}), 500
 
 
