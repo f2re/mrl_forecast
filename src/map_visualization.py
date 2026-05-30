@@ -281,7 +281,8 @@ def generate_sequence_plots(
     input_len: int,
     station_code: str = 'kokx',
     start_datetime: Optional[datetime] = None,
-    max_range_km: float = 250.0
+    max_range_km: float = 250.0,
+    history_timestamps: Optional[List[datetime]] = None
 ) -> List[bytes]:
     """Generate a sequence of radar plots for history and forecast.
 
@@ -296,12 +297,12 @@ def generate_sequence_plots(
     station_code : str, default 'kokx'
         Radar identifier to centre the plots.
     start_datetime : datetime, optional
-        Timestamp corresponding to the first element of ``input_seq``.  The
-        history frames will be annotated at decreasing times (e.g.
-        T‑45 мин), and the forecast frames at increasing times (e.g.
-        T+15 мин).
+        Timestamp corresponding to the LAST element of ``input_seq`` (T-0).
     max_range_km : float, default 250.0
         The maximum range used for plotting and orientation aids.
+    history_timestamps : list of datetime, optional
+        Explicit timestamps for each frame in ``input_seq``. If provided,
+        takes precedence over ``start_datetime`` for history frames.
 
     Returns
     -------
@@ -313,10 +314,14 @@ def generate_sequence_plots(
     for i in range(input_seq.shape[0]):
         lead_time = (input_len - i - 1) * -15
         label = f"История (T{lead_time} мин)" if lead_time != 0 else "Сейчас (T-0)"
+        
         # Compute timestamp for this frame
         ts = None
-        if start_datetime is not None:
+        if history_timestamps and i < len(history_timestamps):
+            ts = history_timestamps[i]
+        elif start_datetime is not None:
             ts = start_datetime + timedelta(minutes=lead_time)
+            
         images.append(
             create_radar_plot(
                 input_seq[i] * 70.0,
@@ -327,12 +332,17 @@ def generate_sequence_plots(
             )
         )
     # Forecast (future frames)
+    # Note: start_datetime for forecast ALWAYS refers to the time of the LAST history frame (T-0)
+    base_forecast_ts = start_datetime
+    if history_timestamps and not base_forecast_ts:
+        base_forecast_ts = history_timestamps[-1]
+
     for i in range(pred_seq.shape[0]):
         lead_time = (i + 1) * 15
         label = f"Прогноз ИИ (T+{lead_time} мин)"
         ts = None
-        if start_datetime is not None:
-            ts = start_datetime + timedelta(minutes=lead_time)
+        if base_forecast_ts is not None:
+            ts = base_forecast_ts + timedelta(minutes=lead_time)
         images.append(
             create_radar_plot(
                 pred_seq[i] * 70.0,

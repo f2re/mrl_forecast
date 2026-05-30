@@ -47,6 +47,8 @@
             color: var(--sidebar-color);
             padding: 1.5rem;
             z-index: 1000;
+            display: flex;
+            flex-direction: column;
         }
         .main-container {
             margin-left: 260px;
@@ -159,8 +161,21 @@
         <div class="card bg-dark border-0">
             <div class="card-body p-3">
                 <h6 class="small fw-bold text-white mb-1">Активная модель:</h6>
-                <p id="activeModelName" class="small text-muted mb-0">Стандартная (Built-in)</p>
+                <p id="activeModelName" class="small text-white-50 mb-0 text-truncate" title="Стандартная (Built-in)">Стандартная (Built-in)</p>
             </div>
+        </div>
+    </div>
+</div>
+
+<!-- Toast Container -->
+<div class="toast-container position-fixed bottom-0 end-0 p-3">
+    <div id="liveToast" class="toast align-items-center border-0" role="alert" aria-live="assertive" aria-atomic="true">
+        <div class="d-flex">
+            <div class="toast-body">
+                <i id="toastIcon" class="fa-solid me-2"></i>
+                <span id="toastMessage"></span>
+            </div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
         </div>
     </div>
 </div>
@@ -533,7 +548,30 @@
 <script>
     // === GLOBAL STATE ===
     const loading = document.getElementById('loadingOverlay');
+    const toastEl = document.getElementById('liveToast');
+    const toast = new bootstrap.Toast(toastEl);
     let playerFrames = [];
+
+    function showToast(message, type = 'success') {
+        const toastMessage = document.getElementById('toastMessage');
+        const toastIcon = document.getElementById('toastIcon');
+        toastMessage.textContent = message;
+        
+        toastEl.className = 'toast align-items-center border-0 text-white';
+        toastIcon.className = 'fa-solid me-2';
+        
+        if (type === 'success') {
+            toastEl.classList.add('bg-success');
+            toastIcon.classList.add('fa-circle-check');
+        } else if (type === 'error' || type === 'danger') {
+            toastEl.classList.add('bg-danger');
+            toastIcon.classList.add('fa-circle-exclamation');
+        } else {
+            toastEl.classList.add('bg-info');
+            toastIcon.classList.add('fa-circle-info');
+        }
+        toast.show();
+    }
     let playerLabels = [];
     let currentFrame = 0;
     let playInterval = null;
@@ -777,7 +815,7 @@
             `;
             
             new bootstrap.Modal(document.getElementById('modelDetailsModal')).show();
-        } catch (e) { alert("Ошибка загрузки деталей: " + e.message); }
+        } catch (e) { showToast("Ошибка загрузки деталей: " + e.message, "error"); }
     }
 
     async function loadModel(path) {
@@ -788,11 +826,14 @@
             const res = await fetch('/api/model/load', { method: 'POST', body: formData });
             const data = await res.json();
             if (data.success) {
-                document.getElementById('activeModelName').textContent = path.split('/').pop();
-                alert(data.message);
+                const modelName = path.split('/').pop();
+                const el = document.getElementById('activeModelName');
+                el.textContent = modelName;
+                el.title = modelName;
+                showToast(data.message);
             } else throw new Error(data.error);
         } catch (e) {
-            alert("Ошибка: " + e.message);
+            showToast("Ошибка: " + e.message, "error");
         } finally {
             loading.style.display = 'none';
         }
@@ -801,7 +842,7 @@
     function goToTrainWithSelected() {
         const selected = Array.from(document.querySelectorAll('.ds-check:checked'));
         if (selected.length === 0) {
-            alert("Выберите хотя бы один датасет");
+            showToast("Выберите хотя бы один датасет", "info");
             return;
         }
         
@@ -914,9 +955,9 @@
         try {
             const res = await fetch('/api/predict', { method: 'POST', body: new FormData(e.target) });
             const data = await res.json();
-            if (data.error) alert(data.error);
+            if (data.error) showToast(data.error, "error");
             else renderResults(data);
-        } catch (e) { alert("Ошибка прогноза: " + e.message); }
+        } catch (e) { showToast("Ошибка прогноза: " + e.message, "error"); }
         finally { loading.style.display = 'none'; }
     };
 

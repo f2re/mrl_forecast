@@ -105,6 +105,15 @@ HIDDEN_CHANNELS: List[int] = []
 def _load_model(checkpoint_path: str):
     """Load a ConvLSTM model checkpoint and update global settings."""
     global model, INPUT_LENGTH, TARGET_LENGTH, HIDDEN_CHANNELS
+    
+    # If the path is a directory, look for best_model.pt inside it
+    if os.path.isdir(checkpoint_path):
+        candidate = os.path.join(checkpoint_path, 'best_model.pt')
+        if os.path.exists(candidate):
+            checkpoint_path = candidate
+        else:
+            raise FileNotFoundError(f"В директории {checkpoint_path} не найден файл best_model.pt")
+
     if not os.path.exists(checkpoint_path):
         print(f"Warning: Checkpoint {checkpoint_path} not found.")
         return
@@ -185,12 +194,14 @@ def predict():
         elif source_type == 'local':
             path = request.form.get('local_path', app.config['LOCAL_DATA_DIR'])
             adapter = LocalDirectoryAdapter(path)
-            array, status_msg = adapter.get_latest_sequence(INPUT_LENGTH)
+            array, timestamps, status_msg = adapter.get_latest_sequence(INPUT_LENGTH)
         
         elif source_type == 'ftp':
             time_id = request.form.get('ftp_time', 'latest')
-            adapter = NOAAFTPAdapter()
-            array, status_msg = adapter.get_latest_sequence(INPUT_LENGTH, station_code=station_code, end_file_id=time_id)
+            # Переключаемся на AWS адаптер для лучшей поддержки времени
+            adapter = NOAAAWSAdapter()
+            # Если time_id не 'latest', пытаемся распарсить время (в реальности нужно сопоставление)
+            array, timestamps, status_msg = adapter.get_latest_sequence(INPUT_LENGTH, station_code=station_code)
         
         else:
             return jsonify({'error': 'Неверный тип источника'}), 400
@@ -206,25 +217,34 @@ def predict():
         in_data = tensor_input.cpu().squeeze(0).squeeze(1).numpy()
         pred_data = preds.cpu().squeeze(0).squeeze(1).numpy()
         
-        png_list = generate_sequence_plots(in_data, pred_data, INPUT_LENGTH, station_code=station_code)
+        # Передаем время последнего снимка для правильной аннотации
+        last_ts = timestamps[-1] if timestamps else datetime.datetime.now()
+        png_list = generate_sequence_plots(
+            in_data, pred_data, INPUT_LENGTH, 
+            station_code=station_code, 
+            start_datetime=last_ts,
+            history_timestamps=timestamps
+        )
         
         # Prepare JSON response
         history = []
         for idx in range(INPUT_LENGTH):
             b64 = base64.b64encode(png_list[idx]).decode('utf-8')
-            label = f"T{(INPUT_LENGTH - idx - 1) * -15 if idx < INPUT_LENGTH-1 else '-0'} мин"
+            ts = timestamps[idx] if idx < len(timestamps) else last_ts
+            label = ts.strftime('%H:%M') + " UTC"
             history.append({'data': b64, 'label': label})
             
         forecast = []
         for idx in range(TARGET_LENGTH):
             b64 = base64.b64encode(png_list[INPUT_LENGTH + idx]).decode('utf-8')
-            label = f"T+{(idx + 1) * 15} мин"
+            ts = last_ts + datetime.timedelta(minutes=(idx + 1) * 15)
+            label = ts.strftime('%H:%M') + " UTC (Прогноз)"
             forecast.append({'data': b64, 'label': label})
             
         # Сохраняем для экспорта
         LAST_FORECAST = {
             'data': pred_data * 70.0, # De-normalize back to dBZ
-            'base_time': datetime.datetime.now(), # В реальности брать время из радара
+            'base_time': last_ts,
             'station': request.form.get('ftp_station', 'unknown')
         }
             

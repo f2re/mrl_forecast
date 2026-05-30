@@ -10,7 +10,7 @@ import pathlib
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from train_nowcasting_model import ConvLSTM
-from adapters import NOAAFTPAdapter, LocalDirectoryAdapter
+from adapters import NOAAAWSAdapter, LocalDirectoryAdapter
 from map_visualization import generate_sequence_plots
 
 def main():
@@ -25,8 +25,17 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    print(f"Загрузка модели из {args.model_path}...")
-    checkpoint = torch.load(args.model_path, map_location=device)
+    model_path = args.model_path
+    if os.path.isdir(model_path):
+        candidate = os.path.join(model_path, 'best_model.pt')
+        if os.path.exists(candidate):
+            model_path = candidate
+        else:
+            print(f"Ошибка: В директории {model_path} не найден файл best_model.pt")
+            sys.exit(1)
+
+    print(f"Загрузка модели из {model_path}...")
+    checkpoint = torch.load(model_path, map_location=device)
     input_length = checkpoint.get('input_length', 4)
     target_length = checkpoint.get('target_length', 4)
     
@@ -41,11 +50,11 @@ def main():
 
     print(f"Загрузка последних данных ({input_length} кадров) для {args.station}...")
     if args.source == 'ftp':
-        adapter = NOAAFTPAdapter()
-        array, msg = adapter.get_latest_sequence(input_length, station_code=args.station)
+        adapter = NOAAAWSAdapter()
+        array, timestamps, msg = adapter.get_latest_sequence(input_length, station_code=args.station)
     else:
         adapter = LocalDirectoryAdapter(args.local_dir)
-        array, msg = adapter.get_latest_sequence(input_length)
+        array, timestamps, msg = adapter.get_latest_sequence(input_length)
     
     print(f"Статус данных: {msg}")
 
@@ -67,7 +76,13 @@ def main():
 
     # Визуализация с картографической основой
     print("Рендеринг карт (с геопривязкой)...")
-    png_list = generate_sequence_plots(in_data, pred_data, input_length, station_code=args.station)
+    last_ts = timestamps[-1] if timestamps else None
+    png_list = generate_sequence_plots(
+        in_data, pred_data, input_length, 
+        station_code=args.station,
+        start_datetime=last_ts,
+        history_timestamps=timestamps
+    )
     
     for i, png_bytes in enumerate(png_list):
         is_forecast = i >= input_length
