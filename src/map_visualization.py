@@ -31,7 +31,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')  # Use a non-interactive backend for headless environments
 import matplotlib.pyplot as plt
-from matplotlib import colors
+from matplotlib import colors, patheffects
 from matplotlib.patches import Circle
 
 try:
@@ -154,7 +154,7 @@ def create_radar_plot(
         norm=norm,
         extent=extent,
         origin='upper',
-        alpha=0.6,
+        alpha=0.8,
         zorder=2
     )
 
@@ -232,14 +232,15 @@ def create_radar_plot(
         )
 
     # Mark the radar site
-    ax.plot(center_x, center_y, 'k+', markersize=12, zorder=3)
+    ax.plot(center_x, center_y, 'k+', markersize=12, zorder=4, markeredgewidth=2)
     ax.text(
         center_x + 0.02 * offset_m,
         center_y + 0.02 * offset_m,
         station_code.upper(),
         weight='bold',
         fontsize=12,
-        zorder=3
+        zorder=4,
+        path_effects=[patheffects.withStroke(linewidth=3, foreground='white')]
     )
 
     # Title

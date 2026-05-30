@@ -11,6 +11,9 @@ import subprocess
 import threading
 from typing import List, Optional, Tuple, Dict
 
+# Force AWS region for NEXRAD data
+os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'
+
 print("DEBUG: Importing numpy...")
 import numpy as np
 print("DEBUG: Importing flask...")
@@ -27,7 +30,7 @@ print("DEBUG: Importing local modules...")
 print("DEBUG: Importing ConvLSTM...")
 from train_nowcasting_model import ConvLSTM
 print("DEBUG: Importing adapters...")
-from adapters import LocalDirectoryAdapter, RainViewerAdapter, NOAAFTPAdapter
+from adapters import LocalDirectoryAdapter, RainViewerAdapter, NOAAFTPAdapter, NOAAAWSAdapter
 print("DEBUG: Importing generate_sequence_plots...")
 from map_visualization import generate_sequence_plots
 print("DEBUG: Importing metadata_utils...")
@@ -198,9 +201,11 @@ def predict():
         
         elif source_type == 'ftp':
             time_id = request.form.get('ftp_time', 'latest')
-            # Переключаемся на AWS адаптер для лучшей поддержки времени
+            adapter = NOAAFTPAdapter()
+            array, timestamps, status_msg = adapter.get_latest_sequence(INPUT_LENGTH, station_code=station_code, end_file_id=time_id)
+        
+        elif source_type == 'aws':
             adapter = NOAAAWSAdapter()
-            # Если time_id не 'latest', пытаемся распарсить время (в реальности нужно сопоставление)
             array, timestamps, status_msg = adapter.get_latest_sequence(INPUT_LENGTH, station_code=station_code)
         
         else:

@@ -9,6 +9,9 @@ import pathlib
 # Добавляем src в путь
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# Force AWS region for NEXRAD data
+os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'
+
 from train_nowcasting_model import ConvLSTM
 from adapters import NOAAAWSAdapter, LocalDirectoryAdapter
 from map_visualization import generate_sequence_plots

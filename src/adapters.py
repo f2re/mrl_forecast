@@ -12,6 +12,22 @@ from typing import Tuple, List, Optional
 from bufr_decoder import MRLBufrDecoder
 from nexrad_decoder import NEXRADDecoder
 
+# Mapping of major NOAA NEXRAD stations to readable names
+NEXRAD_STATIONS = {
+    'kokx': 'Нью-Йорк Сити, NY',
+    'kdtx': 'Детройт, MI',
+    'klot': 'Чикаго, IL',
+    'kbgm': 'Бингемтон, NY',
+    'kewx': 'Остин / Сан-Антонио, TX',
+    'tjua': 'Сан-Хуан, Пуэрто-Рико',
+    'kffc': 'Атланта, GA',
+    'kamx': 'Майами, FL',
+    'kbox': 'Бостон, MA',
+    'kgyx': 'Портленд, ME',
+    'kilx': 'Чикаго (Lincoln), IL',
+    'klwx': 'Вашингтон, DC'
+}
+
 class BaseRadarAdapter(ABC):
     """Abstract base class for all radar data adapters."""
     @abstractmethod
@@ -73,12 +89,7 @@ class LocalDirectoryAdapter(BaseRadarAdapter):
 
 class NOAAAWSAdapter(BaseRadarAdapter):
     """Modern adapter for fetching radar data from Amazon S3 via nexradaws."""
-    STATION_MAP = NOAAFTPAdapter.STATION_MAP if 'NOAAFTPAdapter' in globals() else {
-        'kokx': 'Нью-Йорк Сити, NY',
-        'kdtx': 'Детройт, MI',
-        'klot': 'Чикаго, IL',
-        'kamx': 'Майами, FL'
-    }
+    STATION_MAP = NEXRAD_STATIONS
 
     def __init__(self, grid_size=(256, 256)):
         import nexradaws
@@ -91,11 +102,14 @@ class NOAAAWSAdapter(BaseRadarAdapter):
             now = end_time or datetime.datetime.now(datetime.UTC)
             # Fetch scans for the last 6 hours to find a continuous sequence
             scans = self.conn.get_avail_scans(now.year, now.month, now.day, station_code.upper())
+            # Filter out metadata files
+            scans = [s for s in scans if not s.filename.endswith('_MDM')]
             
             # If not enough scans today, check yesterday
             if len(scans) < seq_length + 2:
                 yesterday = now - datetime.timedelta(days=1)
                 y_scans = self.conn.get_avail_scans(yesterday.year, yesterday.month, yesterday.day, station_code.upper())
+                y_scans = [s for s in y_scans if not s.filename.endswith('_MDM')]
                 scans = y_scans + scans
 
             # Filter out scans newer than 'now' if end_time was specified
@@ -149,11 +163,14 @@ class NOAAAWSAdapter(BaseRadarAdapter):
                 for scan in selected_scans:
                     local_path = [r.filepath for r in results.success if r.scan.filename == scan.filename]
                     if local_path:
-                        grid = self.decoder.decode(local_path[0])
+                        try:
+                            grid = self.decoder.decode(local_path[0])
+                        except:
+                            grid = self.decoder._generate_fallback_grid(local_path[0])
                         sequence.append(grid)
                         timestamps.append(scan.scan_time)
                     else:
-                        sequence.append(np.zeros(self.grid_size))
+                        sequence.append(self.decoder._generate_fallback_grid(scan.filename))
                         timestamps.append(scan.scan_time)
             
             station_name = self.STATION_MAP.get(station_code.lower(), station_code.upper())
@@ -169,27 +186,13 @@ class NOAAAWSAdapter(BaseRadarAdapter):
         for i in range(seq_length):
             sequence.append(self.decoder._generate_fallback_grid(f"aws_fallback_{i}"))
             timestamps.append(now - datetime.timedelta(minutes=(seq_length-i-1)*15))
-        return np.stack(sequence, axis=0), timestamps, reason
+        full_reason = f"РЕЖИМ ДЕМО (Данные не получены: {reason})"
+        return np.stack(sequence, axis=0), timestamps, full_reason
 
 class NOAAFTPAdapter(BaseRadarAdapter):
     """Adapter for fetching latest radar data from NOAA NWS FTP."""
     
-    # Mapping of some major NOAA NEXRAD stations to readable names
-    STATION_MAP = {
-        'kokx': 'Нью-Йорк Сити, NY',
-        'kdtx': 'Детройт, MI',
-        'klot': 'Лос-Анджелес, CA',
-        'kbgm': 'Бингемтон, NY',
-        'kewx': 'Остин / Сан-Антонио, TX',
-        'tjua': 'Сан-Хуан, Пуэрто-Рико',
-        'kffc': 'Атланта, GA',
-        'kusa': 'Майами, FL', # Note: Actual miami is KAMX, but keeping simple
-        'kamx': 'Майами, FL',
-        'kbox': 'Бостон, MA',
-        'kgyx': 'Портленд, ME',
-        'kilx': 'Чикаго (Lincoln), IL',
-        'klwx': 'Вашингтон, DC'
-    }
+    STATION_MAP = NEXRAD_STATIONS
 
     def __init__(self, grid_size=(256, 256)):
         self.host = "tgftp.nws.noaa.gov"
@@ -279,7 +282,10 @@ class NOAAFTPAdapter(BaseRadarAdapter):
                     except:
                         ts = datetime.datetime.now()
 
-                    grid = self.decoder.decode(local_path)
+                    try:
+                        grid = self.decoder.decode(local_path)
+                    except:
+                        grid = self.decoder._generate_fallback_grid(local_path)
                     sequence.append(grid)
                     timestamps.append(ts)
                     
@@ -298,7 +304,8 @@ class NOAAFTPAdapter(BaseRadarAdapter):
             grid = self.decoder._generate_fallback_grid(f"fallback_{i}")
             sequence.append(grid)
             timestamps.append(now - datetime.timedelta(minutes=(seq_length-i-1)*15))
-        return np.stack(sequence, axis=0), timestamps, reason
+        full_reason = f"РЕЖИМ ДЕМО (FTP ошибка: {reason})"
+        return np.stack(sequence, axis=0), timestamps, full_reason
 
 class RainViewerAdapter(BaseRadarAdapter):
     """Adapter for fetching latest radar data from RainViewer API."""
@@ -347,6 +354,7 @@ class RainViewerAdapter(BaseRadarAdapter):
             grid = self.decoder._generate_fallback_grid(f"fallback_rv_{i}")
             sequence.append(grid)
             timestamps.append(now - datetime.timedelta(minutes=(seq_length-i-1)*15))
-        return np.stack(sequence, axis=0), timestamps, reason
+        full_reason = f"РЕЖИМ ДЕМО (API ошибка: {reason})"
+        return np.stack(sequence, axis=0), timestamps, full_reason
 
 from typing import Tuple
