@@ -18,6 +18,27 @@
             font-family: 'Inter', system-ui, -apple-system, sans-serif;
             overflow-x: hidden;
         }
+        
+        /* Animations */
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes slideIn { from { transform: translateX(-20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        
+        .animate-fade-in { animation: fadeIn 0.4s ease-out forwards; }
+        .animate-slide-in { animation: slideIn 0.3s ease-out forwards; }
+        
+        .preview-bar {
+            height: 30px;
+            background: #e2e8f0;
+            border-radius: 4px;
+            overflow: hidden;
+            display: flex;
+            margin-bottom: 2px;
+        }
+        .preview-chunk { flex: 1; border-right: 1px solid rgba(255,255,255,0.2); transition: all 0.2s; }
+        .preview-chunk:hover { opacity: 0.8; cursor: pointer; }
+        .chunk-has-data { background: #10b981; }
+        .chunk-no-data { background: #ef4444; }
+        
         .sidebar {
             width: 260px;
             height: 100vh;
@@ -88,6 +109,10 @@
         
         .radar-img-container img {
             width: 100%; height: auto; border-radius: 0.5rem; background: #000;
+            transition: opacity 0.2s ease-in-out;
+        }
+        #radarPlayerImg {
+            transition: opacity 0.1s ease-in-out;
         }
         .section-pane { display: none; }
         .section-pane.active { display: block; }
@@ -173,6 +198,15 @@
                                 <div class="mb-3">
                                     <label class="form-label small fw-bold">Время</label>
                                     <select class="form-select form-select-sm" id="ftpTimeSelect" name="ftp_time"></select>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label small fw-bold">Дата для предпросмотра</label>
+                                    <input type="date" class="form-control form-control-sm" id="previewDate" value="">
+                                </div>
+                                <div class="mb-3">
+                                    <button type="button" class="btn btn-outline-info btn-sm w-100" onclick="showDataPreview()">
+                                        <i class="fa-solid fa-magnifying-glass-chart me-1"></i> Предпросмотр данных
+                                    </button>
                                 </div>
                             </div>
                             <div id="uploadControls" style="display:none">
@@ -419,30 +453,33 @@
 
 <!-- Modal for model details -->
 <div class="modal fade" id="modelDetailsModal" tabindex="-1">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content border-0 shadow-lg">
-            <div class="modal-header bg-dark text-white">
-                <h5 class="modal-title" id="mdlTitle">Детали модели</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+...
+</div>
+
+<!-- Modal for data preview -->
+<div class="modal fade" id="previewModal" tabindex="-1">
+    <div class="modal-dialog modal-lg animate-fade-in">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fa-solid fa-calendar-check me-2 text-primary"></i>Наличие данных в архиве</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <div class="modal-body bg-light">
-                <div class="row">
-                    <div class="col-md-6">
-                        <div class="card h-100">
-                            <div class="card-header small">Кривая обучения</div>
-                            <div class="card-body p-1">
-                                <img id="mdlPlot" class="img-fluid rounded" src="">
-                                <div id="noPlotMsg" class="text-center py-5 text-muted d-none">График недоступен</div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="card h-100">
-                            <div class="card-header small">Метаданные (Provenance)</div>
-                            <div class="card-body">
-                                <div id="mdlMeta" class="small"></div>
-                            </div>
-                        </div>
+            <div class="modal-body">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 id="previewInfo">Загрузка данных...</h6>
+                    <span id="previewTotal" class="badge bg-primary"></span>
+                </div>
+                <div class="small text-muted mb-2">Суточный график (24 часа):</div>
+                <div class="preview-bar" id="previewBar"></div>
+                <div class="d-flex justify-content-between text-muted small mt-1">
+                    <span>00:00</span>
+                    <span>12:00</span>
+                    <span>23:59</span>
+                </div>
+                <div class="mt-4">
+                    <div class="d-flex gap-3 small">
+                        <div><span class="status-dot bg-success"></span> Данные есть</div>
+                        <div><span class="status-dot bg-danger"></span> Пробелы</div>
                     </div>
                 </div>
             </div>
@@ -452,6 +489,36 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+    // Navigation logic
+...
+    async function showDataPreview() {
+        const station = document.getElementById('ftpStationSelect').value;
+        const dateInput = document.getElementById('previewDate').value;
+        const date = dateInput || new Date().toISOString().split('T')[0];
+
+        const modalEl = document.getElementById('previewModal');
+        const modal = new bootstrap.Modal(modalEl);
+        modal.show();
+
+        const bar = document.getElementById('previewBar');
+        bar.innerHTML = '<div class="w-100 bg-light text-center small text-muted">Загрузка...</div>';
+
+        try {
+            const res = await fetch(`/api/data/preview?station=${station}&date=${date}`);
+            const data = await res.json();
+
+            document.getElementById('previewInfo').textContent = `Станция ${data.station} на ${data.date}`;
+            document.getElementById('previewTotal').textContent = `${data.total_scans} сканов`;
+
+            bar.innerHTML = data.hourly_counts.map((count, hour) => `
+                <div class="preview-chunk ${count > 0 ? 'chunk-has-data' : 'chunk-no-data'}" 
+                     title="${hour}:00 - ${count} сканов"></div>
+            `).join('');
+
+        } catch (e) {
+            bar.innerHTML = `<div class="w-100 bg-danger-subtle text-danger text-center small">Ошибка: ${e.message}</div>`;
+        }
+    }
     // Navigation logic
     document.querySelectorAll('.nav-link').forEach(link => {
         link.addEventListener('click', (e) => {
@@ -795,6 +862,7 @@
 
     document.getElementById('ftpStationSelect').onchange = (e) => loadTimes(e.target.value);
     document.getElementById('dlDate').valueAsDate = new Date();
+    document.getElementById('previewDate').valueAsDate = new Date();
     
     loadStations();
     refreshInventory();

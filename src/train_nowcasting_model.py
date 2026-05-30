@@ -73,19 +73,28 @@ class ConvLSTMCell(nn.Module):
                 torch.zeros(batch_size, self.hidden_dim, height, width, device=self.conv.weight.device))
 
 class ConvLSTM(nn.Module):
-    def __init__(self, input_dim, hidden_dim, kernel_size, num_layers, batch_first=True, bias=True):
+    def __init__(self, input_dim=1, hidden_dim=None, kernel_size=(3, 3), num_layers=None, batch_first=True, bias=True,
+                 input_channels=None, hidden_channels=None, output_steps=None):
         super(ConvLSTM, self).__init__()
-        self._check_kernel_size_consistency(kernel_size)
-        kernel_size = self._extend_for_multilayer(kernel_size, num_layers)
-        hidden_dim = self._extend_for_multilayer(hidden_dim, num_layers)
-        if not len(kernel_size) == len(hidden_dim) == num_layers:
-            raise ValueError('Inconsistent list lengths.')
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-        self.kernel_size = kernel_size
-        self.num_layers = num_layers
+        
+        # Flexibility for different arg names
+        self.input_dim = input_channels if input_channels is not None else input_dim
+        self.hidden_dim = hidden_channels if hidden_channels is not None else hidden_dim
+        if self.hidden_dim is None:
+            self.hidden_dim = [16, 1]
+            
+        self.num_layers = num_layers if num_layers is not None else len(self.hidden_dim)
         self.batch_first = batch_first
         self.bias = bias
+        self.output_steps = output_steps
+        
+        self._check_kernel_size_consistency(kernel_size)
+        self.kernel_size = self._extend_for_multilayer(kernel_size, self.num_layers)
+        self.hidden_dim = self._extend_for_multilayer(self.hidden_dim, self.num_layers)
+        
+        if not len(self.kernel_size) == len(self.hidden_dim) == self.num_layers:
+            raise ValueError('Inconsistent list lengths.')
+            
         cell_list = []
         for i in range(0, self.num_layers):
             cur_input_dim = self.input_dim if i == 0 else self.hidden_dim[i - 1]
@@ -96,22 +105,59 @@ class ConvLSTM(nn.Module):
     def forward(self, input_tensor, hidden_state=None):
         if not self.batch_first:
             input_tensor = input_tensor.permute(1, 0, 2, 3, 4)
+            
         b, t, _, h, w = input_tensor.size()
-        hidden_state = self._init_hidden(batch_size=b, image_size=(h, w))
+        
+        # Initialize hidden state
+        if hidden_state is None:
+            hidden_state = self._init_hidden(batch_size=b, image_size=(h, w))
+            
         layer_output_list = []
         last_state_list = []
+        
         seq_len = input_tensor.size(1)
         cur_layer_input = input_tensor
+        
+        # Encoding/Processing Phase
         for layer_idx in range(self.num_layers):
-            h, c = hidden_state[layer_idx]
+            h_state, c_state = hidden_state[layer_idx]
             output_inner = []
             for t in range(seq_len):
-                h, c = self.cell_list[layer_idx](input_tensor=cur_layer_input[:, t, :, :, :], cur_state=[h, c])
-                output_inner.append(h)
+                h_state, c_state = self.cell_list[layer_idx](input_tensor=cur_layer_input[:, t, :, :, :], cur_state=[h_state, c_state])
+                output_inner.append(h_state)
+            
             layer_output = torch.stack(output_inner, dim=1)
             cur_layer_input = layer_output
             layer_output_list.append(layer_output)
-            last_state_list.append([h, c])
+            last_state_list.append([h_state, c_state])
+            
+        # Prediction Phase (Autoregressive)
+        # If output_steps is defined, we generate future steps
+        if self.output_steps is not None:
+            predictions = []
+            # We take the last output of the encoding phase as our first input for prediction
+            # Or use the last frame of the input tensor if input_dim matches output_dim
+            # Here we assume last layer output is what we want to predict
+            current_input = layer_output_list[-1][:, -1, :, :, :]
+            
+            for _ in range(self.output_steps):
+                # Feed it back through all layers
+                prev_h = current_input
+                for layer_idx in range(self.num_layers):
+                    h_s, c_s = last_state_list[layer_idx]
+                    h_s, c_s = self.cell_list[layer_idx](input_tensor=prev_h, cur_state=[h_s, c_s])
+                    last_state_list[layer_idx] = [h_s, c_s]
+                    prev_h = h_s
+                
+                # The output of the last layer is our prediction for this step
+                predictions.append(prev_h)
+                current_input = prev_h
+                
+            prediction_tensor = torch.stack(predictions, dim=1)
+            if not self.batch_first:
+                return prediction_tensor.permute(1, 0, 2, 3, 4), last_state_list
+            return prediction_tensor, last_state_list
+
         if not self.batch_first:
             return layer_output_list[-1].permute(1, 0, 2, 3, 4), last_state_list
         return layer_output_list[-1], last_state_list
@@ -132,7 +178,6 @@ class ConvLSTM(nn.Module):
         if not isinstance(param, list):
             param = [param] * num_layers
         return param
-
 def train_epoch(model, dataloader, criterion, optimizer, device):
     model.train()
     total_loss = 0
@@ -140,9 +185,6 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
         x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
         output, _ = model(x)
-        # Take last target_length steps
-        target_steps = y.size(1)
-        output = output[:, -target_steps:]
         loss = criterion(output, y)
         loss.backward()
         optimizer.step()
@@ -156,11 +198,10 @@ def validate_epoch(model, dataloader, criterion, device):
         for x, y in dataloader:
             x, y = x.to(device), y.to(device)
             output, _ = model(x)
-            target_steps = y.size(1)
-            output = output[:, -target_steps:]
             loss = criterion(output, y)
             total_loss += loss.item()
     return total_loss / len(dataloader)
+
 
 def save_plots(model_dir, history):
     plt.figure(figsize=(10, 6))
@@ -220,7 +261,14 @@ def main():
 
     # Initialize model
     hidden_channels = args.hidden_channels
-    model = ConvLSTM(input_dim=1, hidden_dim=[hidden_channels, 1], kernel_size=(3, 3), num_layers=2, batch_first=True).to(device)
+    model = ConvLSTM(
+        input_dim=1, 
+        hidden_dim=[hidden_channels, 1], 
+        kernel_size=(3, 3), 
+        num_layers=2, 
+        batch_first=True,
+        output_steps=args.target_length
+    ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     criterion = nn.MSELoss()
 

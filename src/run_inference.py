@@ -32,7 +32,7 @@ def main():
     
     model = ConvLSTM(
         input_channels=1, 
-        hidden_channels=checkpoint.get('hidden_channels', [16, 32]), 
+        hidden_channels=checkpoint.get('hidden_channels', [32, 1]), 
         output_steps=target_length
     )
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -55,7 +55,7 @@ def main():
 
     print("Генерация прогноза...")
     with torch.no_grad():
-        preds = model(tensor_input)
+        preds, _ = model(tensor_input)
 
     in_data = tensor_input.cpu().squeeze(0).squeeze(1).numpy()
     pred_data = preds.cpu().squeeze(0).squeeze(1).numpy()

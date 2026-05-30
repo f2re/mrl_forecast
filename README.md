@@ -39,19 +39,47 @@ mrl_forecast/
 ├── data/                      # 💾 Хранилище (Raw & Processed)
 └── models/                    # 🤖 Реестр обученных моделей (Registry)
 ```
+## 🚀 Быстрый старт (Quick Start)
 
-## 🚀 Быстрый старт
+### Для Linux / macOS:
+1.  **Настройте окружение**: `bash scripts/setup.sh`
+2.  **Запустите платформу**: `bash scripts/run_app.sh`
 
-1. **Настройте окружение**:
-   ```bash
-   bash scripts/setup.sh
-   ```
+### Для Windows 11:
+1.  **Настройте окружение**: Запустите двойным кликом `scripts\setup.bat`
+2.  **Запустите платформу**: Запустите двойным кликом `scripts\run_app.bat`
 
-2. **Запустите платформу**:
-   ```bash
-   bash scripts/run_app.sh
-   ```
-   Откройте браузер: `http://localhost:5005`.
+Откройте браузер: `http://localhost:5005`.
+
+---
+
+## 💻 Установка на Windows 11 (Подробно)
+
+Для корректной работы системы на Windows 11 выполните следующие шаги:
+
+### 1. Установка необходимого ПО
+*   **Python 3.10+**: [Скачать с python.org](https://www.python.org/downloads/windows/). 
+    *   *Важно*: При установке обязательно отметьте галочку **"Add Python to PATH"**.
+*   **Git**: [Скачать с git-scm.com](https://git-scm.com/download/win).
+*   **Microsoft C++ Build Tools**: [Скачать здесь](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
+    *   Выберите рабочую нагрузку *"Разработка классических приложений на C++"* (необходимо для компиляции некоторых библиотек, таких как `netCDF4` и `arm-pyart`).
+
+### 2. Подготовка проекта
+1.  Склонируйте репозиторий:
+    ```bash
+    git clone https://github.com/your-repo/mrl_forecast.git
+    cd mrl_forecast
+    ```
+2.  Запустите файл автоматической настройки: `scripts\setup.bat`. 
+    *   Скрипт создаст виртуальное окружение `venv`, обновит `pip` и установит все зависимости.
+    *   Также будут созданы необходимые папки для данных и моделей.
+
+### 3. Запуск приложения
+Запустите `scripts\run_app.bat`. Консоль должна отобразить процесс загрузки модели и адрес сервера.
+
+---
+
+## 📂 Структура проекта
 
 ## 🌐 Управление через веб-интерфейс (Рекомендуется)
 
@@ -64,24 +92,36 @@ mrl_forecast/
 
 ---
 
-## 🧬 Работа через терминал
+## 🧬 Работа через терминал (Terminal)
 
-Для продвинутых пользователей доступны Bash-интерфейсы:
+Для продвинутых пользователей доступны командные интерфейсы (Bash для Linux/macOS, Batch для Windows):
 
 ### Шаг 1: Скачивание архива
 ```bash
+# Linux/macOS
 bash scripts/download.sh KOKX 2024-05-20 100
+
+# Windows
+scripts\download.bat KOKX 2024-05-20 100
 ```
 *Данные сохраняются в `data/raw/archive/<ID_СЕССИИ>`.*
 
 ### Шаг 2: Создание датасета
 ```bash
+# Linux/macOS
 bash scripts/prepare.sh 8 data/raw/archive/<ID_СЕССИИ>
+
+# Windows
+scripts\prepare.bat 8 data/raw/archive/<ID_СЕССИИ>
 ```
 
 ### Шаг 3: Обучение модели
 ```bash
+# Linux/macOS
 bash scripts/train.sh 20 4 1e-4 data/processed_archive/<ID_ДАТАСЕТА>
+
+# Windows
+scripts\train.bat 20 4 1e-4 data/processed_archive/<ID_ДАТАСЕТА>
 ```
 *Чекпоинты и метаданные сохраняются в `models/registry/`.*
 

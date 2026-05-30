@@ -112,7 +112,7 @@ def _load_model(checkpoint_path: str):
     checkpoint = torch.load(checkpoint_path, map_location=device)
     INPUT_LENGTH = checkpoint.get('input_length', 4)
     TARGET_LENGTH = checkpoint.get('target_length', 4)
-    HIDDEN_CHANNELS = checkpoint.get('hidden_channels', [16, 32])
+    HIDDEN_CHANNELS = checkpoint.get('hidden_channels', [32, 1])
     mdl = ConvLSTM(
         input_channels=1,
         hidden_channels=HIDDEN_CHANNELS,
@@ -201,7 +201,7 @@ def predict():
         # Preprocess and predict
         tensor_input = _preprocess_input(array)
         with torch.no_grad():
-            preds = model(tensor_input)
+            preds, _ = model(tensor_input)
         
         in_data = tensor_input.cpu().squeeze(0).squeeze(1).numpy()
         pred_data = preds.cpu().squeeze(0).squeeze(1).numpy()
@@ -362,6 +362,36 @@ def get_task_logs(task_id):
     if not result:
         return jsonify({'error': 'Задача не найдена'}), 404
     return jsonify(result)
+
+
+@app.route('/api/data/preview', methods=['GET'])
+def preview_data():
+    station = request.args.get('station', 'KOKX').upper()
+    date_str = request.args.get('date')
+    
+    if not date_str:
+        return jsonify({'error': 'Дата не указана'}), 400
+        
+    try:
+        import nexradaws
+        conn = nexradaws.NexradAwsInterface()
+        dt = datetime.datetime.strptime(date_str, '%Y-%m-%d')
+        scans = conn.get_avail_scans(dt.year, dt.month, dt.day, station)
+        
+        # Группируем по часам для наглядности
+        availability = [0] * 24
+        for scan in scans:
+            availability[scan.scan_time.hour] += 1
+            
+        return jsonify({
+            'station': station,
+            'date': date_str,
+            'total_scans': len(scans),
+            'hourly_counts': availability,
+            'has_data': len(scans) > 0
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':

@@ -14,11 +14,11 @@ class TestModel(unittest.TestCase):
         input_length = 4
         target_length = 4
         h, w = 64, 64
-        model = ConvLSTM(input_channels=1, hidden_channels=[16, 32], output_steps=target_length)
+        model = ConvLSTM(input_channels=1, hidden_channels=[16, 1], output_steps=target_length)
         
         # (batch, time, channels, h, w)
         input_tensor = torch.randn(batch_size, input_length, 1, h, w)
-        output = model(input_tensor)
+        output, _ = model(input_tensor)
         
         self.assertEqual(output.shape, (batch_size, target_length, 1, h, w))
 
