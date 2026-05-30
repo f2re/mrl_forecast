@@ -88,8 +88,8 @@ class ConvLSTM(nn.Module):
         self.bias = bias
         self.output_steps = output_steps
         
-        self._check_kernel_size_consistency(kernel_size)
-        self.kernel_size = self._extend_for_multilayer(kernel_size, self.num_layers)
+        self.kernel_size = self._check_kernel_size_consistency(kernel_size)
+        self.kernel_size = self._extend_for_multilayer(self.kernel_size, self.num_layers)
         self.hidden_dim = self._extend_for_multilayer(self.hidden_dim, self.num_layers)
         
         if not len(self.kernel_size) == len(self.hidden_dim) == self.num_layers:
@@ -170,8 +170,16 @@ class ConvLSTM(nn.Module):
 
     @staticmethod
     def _check_kernel_size_consistency(kernel_size):
-        if not (isinstance(kernel_size, tuple) or (isinstance(kernel_size, list) and all([isinstance(elem, tuple) for elem in kernel_size]))):
-            raise ValueError('`kernel_size` must be tuple or list of tuples')
+        if isinstance(kernel_size, int):
+            return (kernel_size, kernel_size)
+        if isinstance(kernel_size, tuple):
+            return kernel_size
+        if isinstance(kernel_size, list):
+            if all(isinstance(elem, tuple) for elem in kernel_size):
+                return kernel_size
+            if all(isinstance(elem, int) for elem in kernel_size):
+                return [(e, e) for e in kernel_size]
+        raise ValueError('`kernel_size` must be int, tuple or list of tuples/ints')
 
     @staticmethod
     def _extend_for_multilayer(param, num_layers):

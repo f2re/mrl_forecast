@@ -116,7 +116,7 @@ def _load_model(checkpoint_path: str):
     mdl = ConvLSTM(
         input_channels=1,
         hidden_channels=HIDDEN_CHANNELS,
-        kernel_size=3,
+        kernel_size=(3, 3),
         output_steps=TARGET_LENGTH,
     )
     mdl.load_state_dict(checkpoint['model_state_dict'])
