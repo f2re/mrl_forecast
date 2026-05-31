@@ -32,7 +32,6 @@ import matplotlib
 matplotlib.use('Agg')  # Use a non-interactive backend for headless environments
 import matplotlib.pyplot as plt
 from matplotlib import colors, patheffects
-from matplotlib.patches import Circle
 
 try:
     import contextily as ctx
@@ -40,8 +39,9 @@ except Exception:
     ctx = None  # Fallback if contextily is not available
 
 try:
-    from pyproj import Transformer
+    from pyproj import CRS, Transformer
 except Exception:
+    CRS = None  # Fallback if pyproj is not available
     Transformer = None  # Fallback if pyproj is not available
 
 # Географические координаты радаров (Долгота, Широта)
@@ -49,9 +49,52 @@ RADAR_COORDS = {
     'kokx': (-72.86, 40.86),  # Нью‑Йорк
     'kdtx': (-83.47, 42.69),  # Детройт
     'klot': (-88.08, 41.60),  # Чикаго
+    'kbgm': (-75.98, 42.20),  # Бингемтон
+    'kewx': (-98.03, 29.70),  # Остин / Сан-Антонио
+    'tjua': (-66.08, 18.12),  # Сан-Хуан
+    'kffc': (-84.57, 33.36),  # Атланта
     'kamx': (-80.41, 25.61),  # Майами
-    'default': (0.0, 0.0)     # Fallback
+    'kbox': (-71.14, 41.96),  # Бостон
+    'kgyx': (-70.26, 43.89),  # Портленд
+    'kilx': (-89.34, 40.15),  # Lincoln
+    'klwx': (-77.49, 38.98),  # Вашингтон
 }
+
+
+def _local_to_web_mercator_transformer(station_code: str):
+    """Create a local AEQD -> Web Mercator transformer for a radar station."""
+    station = station_code.lower()
+    if station not in RADAR_COORDS:
+        raise ValueError(f"unknown radar station: {station_code}")
+    if CRS is None or Transformer is None:
+        raise ImportError("pyproj is required for coordinate transformations")
+    lon, lat = RADAR_COORDS[station]
+    local_crs = CRS.from_proj4(
+        f"+proj=aeqd +lat_0={lat} +lon_0={lon} +datum=WGS84 +units=m +no_defs"
+    )
+    return Transformer.from_crs(local_crs, "epsg:3857", always_xy=True)
+
+
+def _transform_local_points(station_code: str, x, y):
+    transformer = _local_to_web_mercator_transformer(station_code)
+    return transformer.transform(x, y)
+
+
+def prepare_radar_overlay(
+    data: np.ndarray,
+    station_code: str,
+    max_range_km: float,
+) -> Tuple[np.ma.MaskedArray, List[float], str]:
+    """Return a north-up radar overlay and Web Mercator extent."""
+    offset_m = max_range_km * 1000.0
+    corner_x, corner_y = _transform_local_points(
+        station_code,
+        [-offset_m, offset_m],
+        [-offset_m, offset_m],
+    )
+    extent = [corner_x[0], corner_x[1], corner_y[0], corner_y[1]]
+    overlay = np.ma.masked_where(~np.isfinite(data) | (data < 1.0), data)
+    return overlay, extent, "lower"
 
 def get_radar_colormap() -> Tuple[colors.Colormap, colors.BoundaryNorm]:
     """Return a matplotlib colour map and normalisation for reflectivity.
@@ -132,20 +175,10 @@ def create_radar_plot(
     """
     cmap, norm = get_radar_colormap()
 
-    # Mask zeros to make them transparent
-    data = np.ma.masked_where(data < 1.0, data)
-
     fig, ax = plt.subplots(figsize=(8, 8), dpi=100)
-
-    # Transform radar coordinates to Web Mercator
-    lon, lat = RADAR_COORDS.get(station_code.lower(), RADAR_COORDS['default'])
-    if Transformer is None:
-        raise ImportError("pyproj is required for coordinate transformations")
-    transformer = Transformer.from_crs("epsg:4326", "epsg:3857", always_xy=True)
-    center_x, center_y = transformer.transform(lon, lat)
-
     offset_m = max_range_km * 1000.0
-    extent = [center_x - offset_m, center_x + offset_m, center_y - offset_m, center_y + offset_m]
+    data, extent, origin = prepare_radar_overlay(data, station_code, max_range_km)
+    center_x, center_y = _transform_local_points(station_code, 0.0, 0.0)
 
     # Plot reflectivity overlay
     im = ax.imshow(
@@ -153,7 +186,7 @@ def create_radar_plot(
         cmap=cmap,
         norm=norm,
         extent=extent,
-        origin='upper',
+        origin=origin,
         alpha=0.8,
         zorder=2
     )
@@ -181,21 +214,30 @@ def create_radar_plot(
     # Draw concentric circles with labels
     for dist_km in ring_intervals_km:
         radius_m = dist_km * 1000.0
-        circle = Circle(
-            (center_x, center_y),
-            radius_m,
-            edgecolor=ring_color,
-            facecolor='none',
+        ring_angles = np.linspace(0.0, 2.0 * np.pi, 181)
+        ring_x, ring_y = _transform_local_points(
+            station_code,
+            radius_m * np.sin(ring_angles),
+            radius_m * np.cos(ring_angles),
+        )
+        ax.plot(
+            ring_x,
+            ring_y,
+            color=ring_color,
             linewidth=0.8,
             linestyle=line_style,
             alpha=ring_alpha,
             zorder=2.5
         )
-        ax.add_patch(circle)
         # Place distance label slightly outside the circle on the east side
+        label_x, label_y = _transform_local_points(
+            station_code,
+            radius_m + (0.02 * offset_m),
+            0.0,
+        )
         ax.text(
-            center_x + radius_m + (0.02 * offset_m),
-            center_y,
+            label_x,
+            label_y,
             f"{int(dist_km)} км",
             color=ring_color,
             fontsize=8,
@@ -207,8 +249,11 @@ def create_radar_plot(
     # Draw radial lines and azimuth labels
     for angle in azimuth_angles_deg:
         angle_rad = math.radians(angle)
-        x_end = center_x + offset_m * math.sin(angle_rad)  # note: y increases northwards, x eastwards
-        y_end = center_y + offset_m * math.cos(angle_rad)
+        x_end, y_end = _transform_local_points(
+            station_code,
+            offset_m * math.sin(angle_rad),
+            offset_m * math.cos(angle_rad),
+        )
         ax.plot(
             [center_x, x_end],
             [center_y, y_end],
@@ -283,7 +328,8 @@ def generate_sequence_plots(
     station_code: str = 'kokx',
     start_datetime: Optional[datetime] = None,
     max_range_km: float = 250.0,
-    history_timestamps: Optional[List[datetime]] = None
+    history_timestamps: Optional[List[datetime]] = None,
+    interval_minutes: int = 10,
 ) -> List[bytes]:
     """Generate a sequence of radar plots for history and forecast.
 
@@ -313,7 +359,7 @@ def generate_sequence_plots(
     images: List[bytes] = []
     # History (past frames)
     for i in range(input_seq.shape[0]):
-        lead_time = (input_len - i - 1) * -15
+        lead_time = (input_len - i - 1) * -interval_minutes
         label = f"История (T{lead_time} мин)" if lead_time != 0 else "Сейчас (T-0)"
         
         # Compute timestamp for this frame
@@ -339,7 +385,7 @@ def generate_sequence_plots(
         base_forecast_ts = history_timestamps[-1]
 
     for i in range(pred_seq.shape[0]):
-        lead_time = (i + 1) * 15
+        lead_time = (i + 1) * interval_minutes
         label = f"Прогноз ИИ (T+{lead_time} мин)"
         ts = None
         if base_forecast_ts is not None:

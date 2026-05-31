@@ -1,360 +1,334 @@
-import os
-import numpy as np
-import pathlib
-import requests
-import io
-import ftplib
-import tempfile
+"""Radar source adapters with explicit observation trust boundaries."""
+
+from __future__ import annotations
+
 import datetime
-from PIL import Image
+import ftplib
+import os
+import pathlib
+import tempfile
 from abc import ABC, abstractmethod
-from typing import Tuple, List, Optional
+from typing import List, Optional
+
+import numpy as np
+
 from bufr_decoder import MRLBufrDecoder
 from nexrad_decoder import NEXRADDecoder
+from radar_pipeline import (
+    DemoRadarAdapter,
+    RadarDecodeError,
+    RadarFrame,
+    RadarPipeline,
+    RadarSequence,
+    RadarSourceError,
+)
 
-# Mapping of major NOAA NEXRAD stations to readable names
 NEXRAD_STATIONS = {
-    'kokx': 'Нью-Йорк Сити, NY',
-    'kdtx': 'Детройт, MI',
-    'klot': 'Чикаго, IL',
-    'kbgm': 'Бингемтон, NY',
-    'kewx': 'Остин / Сан-Антонио, TX',
-    'tjua': 'Сан-Хуан, Пуэрто-Рико',
-    'kffc': 'Атланта, GA',
-    'kamx': 'Майами, FL',
-    'kbox': 'Бостон, MA',
-    'kgyx': 'Портленд, ME',
-    'kilx': 'Чикаго (Lincoln), IL',
-    'klwx': 'Вашингтон, DC'
+    "kokx": "Нью-Йорк Сити, NY",
+    "kdtx": "Детройт, MI",
+    "klot": "Чикаго, IL",
+    "kbgm": "Бингемтон, NY",
+    "kewx": "Остин / Сан-Антонио, TX",
+    "tjua": "Сан-Хуан, Пуэрто-Рико",
+    "kffc": "Атланта, GA",
+    "kamx": "Майами, FL",
+    "kbox": "Бостон, MA",
+    "kgyx": "Портленд, ME",
+    "kilx": "Чикаго (Lincoln), IL",
+    "klwx": "Вашингтон, DC",
 }
 
+AWS_PUBLIC_REGION = "us-east-1"
+
+
+def configure_public_aws_region() -> None:
+    """Keep public NOAA S3 access independent from a user's local AWS profile."""
+    os.environ["AWS_DEFAULT_REGION"] = AWS_PUBLIC_REGION
+    os.environ["AWS_REGION"] = AWS_PUBLIC_REGION
+
+
 class BaseRadarAdapter(ABC):
-    """Abstract base class for all radar data adapters."""
+    """Abstract base class for observation and explicitly selected demo adapters."""
+
     @abstractmethod
-    def get_latest_sequence(self, seq_length: int) -> Tuple[np.ndarray, List[datetime.datetime], str]:
-        """Fetch the latest sequence of radar frames. Returns (sequence, timestamps, status_message)."""
-        pass
+    def get_latest_sequence(self, seq_length: int) -> RadarSequence:
+        """Fetch a timestamped sequence or raise a typed radar error."""
+
 
 class LocalDirectoryAdapter(BaseRadarAdapter):
-    """Adapter for loading radar data from a local directory."""
-    def __init__(self, directory: str, grid_size=(256, 256)):
+    """Load observed BUFR or NumPy grids from a local directory."""
+
+    def __init__(
+        self,
+        directory: str,
+        grid_size: tuple[int, int] = (256, 256),
+        pipeline: Optional[RadarPipeline] = None,
+    ):
         self.directory = pathlib.Path(directory)
-        self.grid_size = grid_size
+        self.pipeline = pipeline or RadarPipeline()
         self.decoder = MRLBufrDecoder(grid_size=grid_size)
 
-    def get_latest_sequence(self, seq_length: int) -> Tuple[np.ndarray, List[datetime.datetime], str]:
+    def get_latest_sequence(self, seq_length: int) -> RadarSequence:
         if not self.directory.exists():
-            raise ValueError(f"Директория {self.directory} не существует.")
-            
+            raise RadarSourceError(f"Директория {self.directory} не существует.")
         files = sorted(
-            [p for p in self.directory.iterdir() if p.suffix in ('.bufr', '.npy', '.npz')],
+            [path for path in self.directory.iterdir() if path.suffix in (".bufr", ".npy", ".npz")],
             key=os.path.getmtime,
-            reverse=True
+            reverse=True,
         )
-        
         if len(files) < seq_length:
-            msg = f"В папке всего {len(files)} файлов. Использован демо-режим."
-            dummy_seq, dummy_ts = self._get_fallback_data(seq_length)
-            return dummy_seq, dummy_ts, msg
-        
-        latest_files = files[:seq_length][::-1]
-        sequence = []
-        timestamps = []
-        for f in latest_files:
-            try:
-                # In a real app, we'd extract time from file content or metadata
-                ts = datetime.datetime.fromtimestamp(os.path.getmtime(f))
-                if f.suffix == '.bufr':
-                    grid = self.decoder.decode(str(f))
-                elif f.suffix == '.npy':
-                    grid = np.load(f)
-                elif f.suffix == '.npz':
-                    grid = np.load(f)['arr_0']
-                sequence.append(grid)
-                timestamps.append(ts)
-            except:
-                sequence.append(self.decoder._generate_fallback_grid(str(f)))
-                timestamps.append(datetime.datetime.now())
-            
-        return np.stack(sequence, axis=0), timestamps, "Данные загружены из локальной папки."
+            raise RadarSourceError(
+                f"В папке {self.directory} только {len(files)} файлов, требуется {seq_length}."
+            )
 
-    def _get_fallback_data(self, seq_length: int):
-        sequence = []
-        timestamps = []
-        now = datetime.datetime.now()
-        for i in range(seq_length):
-            sequence.append(self.decoder._generate_fallback_grid(f"fallback_{i}"))
-            timestamps.append(now - datetime.timedelta(minutes=(seq_length-i-1)*15))
-        return np.stack(sequence, axis=0), timestamps
+        frames = [self._load_file(path) for path in files[:seq_length][::-1]]
+        return RadarSequence(
+            frames=frames,
+            source="local",
+            message="Данные загружены из локальной папки.",
+        )
+
+    def _load_file(self, path: pathlib.Path) -> RadarFrame:
+        timestamp = datetime.datetime.fromtimestamp(path.stat().st_mtime, datetime.UTC)
+        try:
+            if path.suffix == ".bufr":
+                grid = self.decoder.decode(str(path))
+            elif path.suffix == ".npz":
+                grid = np.load(path)["arr_0"]
+            else:
+                grid = np.load(path)
+            if grid.ndim == 3:
+                grid = grid[-1]
+            if grid.ndim != 2:
+                raise RadarDecodeError(f"Expected a 2D grid in {path}, got shape {grid.shape}")
+            return self.pipeline.frame_from_grid(
+                grid,
+                timestamp_utc=timestamp,
+                station="LOCAL",
+                source="local",
+                provenance={"path": str(path)},
+            )
+        except RadarDecodeError:
+            raise
+        except Exception as exc:
+            raise RadarDecodeError(f"Failed to load local radar grid {path}: {exc}") from exc
+
 
 class NOAAAWSAdapter(BaseRadarAdapter):
-    """Modern adapter for fetching radar data from Amazon S3 via nexradaws."""
+    """Fetch NOAA NEXRAD Level II observations from the public AWS S3 archive."""
+
     STATION_MAP = NEXRAD_STATIONS
 
-    def __init__(self, grid_size=(256, 256)):
-        import nexradaws
-        self.conn = nexradaws.NexradAwsInterface()
+    def __init__(
+        self,
+        grid_size: tuple[int, int] = (256, 256),
+        conn=None,
+        pipeline: Optional[RadarPipeline] = None,
+    ):
+        configure_public_aws_region()
+        if conn is None:
+            import nexradaws
+
+            conn = nexradaws.NexradAwsInterface()
+        self.conn = conn
+        self.pipeline = pipeline or RadarPipeline()
         self.grid_size = grid_size
-        self.decoder = NEXRADDecoder(grid_size=grid_size)
 
-    def get_latest_sequence(self, seq_length: int, station_code: str = 'kokx', end_time: Optional[datetime.datetime] = None) -> Tuple[np.ndarray, List[datetime.datetime], str]:
+    def get_latest_sequence(
+        self,
+        seq_length: int,
+        station_code: str = "kokx",
+        end_time: Optional[datetime.datetime] = None,
+    ) -> RadarSequence:
+        station = station_code.upper()
+        now = end_time or datetime.datetime.now(datetime.UTC)
         try:
-            now = end_time or datetime.datetime.now(datetime.UTC)
-            # Fetch scans for the last 6 hours to find a continuous sequence
-            scans = self.conn.get_avail_scans(now.year, now.month, now.day, station_code.upper())
-            # Filter out metadata files
-            scans = [s for s in scans if not s.filename.endswith('_MDM')]
-            
-            # If not enough scans today, check yesterday
-            if len(scans) < seq_length + 2:
-                yesterday = now - datetime.timedelta(days=1)
-                y_scans = self.conn.get_avail_scans(yesterday.year, yesterday.month, yesterday.day, station_code.upper())
-                y_scans = [s for s in y_scans if not s.filename.endswith('_MDM')]
-                scans = y_scans + scans
+            scans = self._available_scans(now, station)
+            selected_scans = self._select_scans(scans, seq_length, end_time=end_time)
+            frames = self._download_and_process(selected_scans, station)
+        except (RadarSourceError, RadarDecodeError):
+            raise
+        except Exception as exc:
+            raise RadarSourceError(f"AWS source failed for {station}: {exc}") from exc
 
-            # Filter out scans newer than 'now' if end_time was specified
-            if end_time:
-                scans = [s for s in scans if s.scan_time <= end_time]
+        station_name = self.STATION_MAP.get(station_code.lower(), station)
+        return RadarSequence(
+            frames=frames,
+            source="aws",
+            message=f"AWS S3: {station_name} | {len(frames)} observed frames",
+        )
 
-            # Sort by time
-            scans.sort(key=lambda x: x.scan_time)
-            
-            # Find the best continuous sequence ending at the latest available scan
-            # We want seq_length scans with ~15 min intervals
-            target_interval = datetime.timedelta(minutes=15)
-            tolerance = datetime.timedelta(minutes=5)
-            
-            selected_scans = []
-            if not scans:
-                return self._get_fallback_data(seq_length, "Нет доступных сканов на AWS.")
+    def _available_scans(self, now: datetime.datetime, station: str) -> list:
+        scans = self.conn.get_avail_scans(now.year, now.month, now.day, station)
+        scans = [scan for scan in scans if not scan.filename.endswith("_MDM")]
+        if len(scans) < 2:
+            yesterday = now - datetime.timedelta(days=1)
+            older = self.conn.get_avail_scans(
+                yesterday.year,
+                yesterday.month,
+                yesterday.day,
+                station,
+            )
+            scans = [scan for scan in older if not scan.filename.endswith("_MDM")] + scans
+        return scans
 
-            # Backwards search for a sequence
-            curr_idx = len(scans) - 1
-            selected_scans.append(scans[curr_idx])
-            
-            while len(selected_scans) < seq_length and curr_idx > 0:
-                prev_idx = curr_idx - 1
-                time_diff = selected_scans[-1].scan_time - scans[prev_idx].scan_time
-                
-                if time_diff >= (target_interval - tolerance) and time_diff <= (target_interval + tolerance):
-                    selected_scans.append(scans[prev_idx])
-                    curr_idx = prev_idx
-                elif time_diff < (target_interval - tolerance):
-                    # Scan too close, skip it
-                    curr_idx = prev_idx
-                else:
-                    # Gap too large! Try to find another sequence or just stop
-                    break
-            
-            if len(selected_scans) < seq_length:
-                # If we couldn't find a perfect sequence, just take the last N
-                selected_scans = scans[-seq_length:]
-                status = f"Внимание: последовательность может быть нерегулярной (пробелы в данных)."
-            else:
-                status = "Последовательность успешно верифицирована (15-мин интервалы)."
+    def _select_scans(
+        self,
+        scans: list,
+        seq_length: int,
+        *,
+        end_time: Optional[datetime.datetime],
+    ) -> list:
+        if end_time is not None:
+            scans = [scan for scan in scans if scan.scan_time <= end_time]
+        scans = sorted(scans, key=lambda scan: scan.scan_time)
+        if not scans:
+            raise RadarSourceError("Нет доступных сканов AWS.")
 
-            selected_scans.sort(key=lambda x: x.scan_time)
-            
-            sequence = []
-            timestamps = []
-            
-            with tempfile.TemporaryDirectory() as tmpdir:
-                results = self.conn.download(selected_scans, tmpdir)
-                for scan in selected_scans:
-                    local_path = [r.filepath for r in results.success if r.scan.filename == scan.filename]
-                    if local_path:
-                        try:
-                            grid = self.decoder.decode(local_path[0])
-                        except:
-                            grid = self.decoder._generate_fallback_grid(local_path[0])
-                        sequence.append(grid)
-                        timestamps.append(scan.scan_time)
-                    else:
-                        sequence.append(self.decoder._generate_fallback_grid(scan.filename))
-                        timestamps.append(scan.scan_time)
-            
-            station_name = self.STATION_MAP.get(station_code.lower(), station_code.upper())
-            return np.stack(sequence, axis=0), timestamps, f"AWS S3: {station_name} | {status}"
+        selected = [scans[-1]]
+        remaining = scans[:-1]
+        target_step = datetime.timedelta(minutes=self.pipeline.config.time_step_minutes)
+        tolerance = datetime.timedelta(minutes=4)
+        while remaining and len(selected) < seq_length:
+            target_time = selected[-1].scan_time - target_step
+            candidate = min(remaining, key=lambda scan: abs(scan.scan_time - target_time))
+            if abs(candidate.scan_time - target_time) > tolerance:
+                break
+            selected.append(candidate)
+            remaining = [scan for scan in remaining if scan.scan_time < candidate.scan_time]
+        if len(selected) != seq_length:
+            raise RadarSourceError(
+                f"Недостаточно регулярных AWS сканов: найдено {len(selected)}, требуется {seq_length}."
+            )
+        return sorted(selected, key=lambda scan: scan.scan_time)
 
-        except Exception as e:
-            return self._get_fallback_data(seq_length, f"Ошибка AWS ({station_code}): {str(e)}")
+    def _download_and_process(self, scans: list, station: str) -> List[RadarFrame]:
+        frames = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = self.conn.download(scans, tmpdir)
+            downloaded = {item.scan.filename: item.filepath for item in results.success}
+            for scan in scans:
+                path = downloaded.get(scan.filename)
+                if path is None:
+                    raise RadarSourceError(f"AWS download failed for {scan.filename}")
+                frames.append(
+                    self.pipeline.process_file(
+                        path,
+                        timestamp_utc=scan.scan_time,
+                        station=station,
+                        source="aws",
+                    )
+                )
+        return frames
 
-    def _get_fallback_data(self, seq_length: int, reason: str):
-        sequence = []
-        timestamps = []
-        now = datetime.datetime.now()
-        for i in range(seq_length):
-            sequence.append(self.decoder._generate_fallback_grid(f"aws_fallback_{i}"))
-            timestamps.append(now - datetime.timedelta(minutes=(seq_length-i-1)*15))
-        full_reason = f"РЕЖИМ ДЕМО (Данные не получены: {reason})"
-        return np.stack(sequence, axis=0), timestamps, full_reason
 
 class NOAAFTPAdapter(BaseRadarAdapter):
-    """Adapter for fetching latest radar data from NOAA NWS FTP."""
-    
+    """Fetch NEXRAD Level III observations from NOAA FTP."""
+
     STATION_MAP = NEXRAD_STATIONS
 
-    def __init__(self, grid_size=(256, 256)):
+    def __init__(self, grid_size: tuple[int, int] = (256, 256)):
         self.host = "tgftp.nws.noaa.gov"
         self.base_path = "/SL.us008001/DF.of/DC.radar/DS.p94r3/"
-        self.grid_size = grid_size
+        self.pipeline = RadarPipeline()
         self.decoder = NEXRADDecoder(grid_size=grid_size)
 
     def get_available_stations(self) -> list:
-        """Returns a list of dictionaries with station codes and names."""
         try:
-            ftp = ftplib.FTP(self.host, timeout=10)
-            ftp.login()
-            ftp.cwd(self.base_path)
-            dirs = [d for d in ftp.nlst() if d.startswith("SI.")]
-            ftp.quit()
-            
+            with ftplib.FTP(self.host, timeout=10) as ftp:
+                ftp.login()
+                ftp.cwd(self.base_path)
+                directories = [item for item in ftp.nlst() if item.startswith("SI.")]
             stations = []
-            for d in dirs:
-                code = d.replace("SI.", "").lower()
-                name = self.STATION_MAP.get(code, f"Радар {code.upper()}")
-                stations.append({'code': code, 'name': name})
-            
-            # Sort with known mapped stations first
-            stations.sort(key=lambda x: (x['code'] not in self.STATION_MAP, x['name']))
+            for directory in directories:
+                code = directory.replace("SI.", "").lower()
+                stations.append({"code": code, "name": self.STATION_MAP.get(code, f"Радар {code.upper()}")})
+            stations.sort(key=lambda item: (item["code"] not in self.STATION_MAP, item["name"]))
             return stations
-        except Exception as e:
-            print(f"Error fetching stations: {e}")
+        except Exception:
             return []
 
     def get_available_times(self, station_code: str) -> list:
-        """Returns a list of recent files (representing time) for a station."""
         try:
-            ftp = ftplib.FTP(self.host, timeout=10)
-            ftp.login()
-            station_path = f"{self.base_path}SI.{station_code}/"
-            ftp.cwd(station_path)
-            files = sorted([f for f in ftp.nlst() if f.startswith("sn.") and f != "sn.last"])
-            ftp.quit()
-            
-            # Return last 20 files as available times (they represent recent slices)
-            # In a real app, we'd parse MDTM to show actual HH:MM, but filenames indicate order
-            times = []
-            for f in files[-20:]:
-                times.append({'id': f, 'label': f"Срез {f.split('.')[-1]}"})
-            return times[::-1] # Newest first
-        except Exception as e:
-            print(f"Error fetching times: {e}")
+            with ftplib.FTP(self.host, timeout=10) as ftp:
+                ftp.login()
+                ftp.cwd(f"{self.base_path}SI.{station_code}/")
+                files = sorted([item for item in ftp.nlst() if item.startswith("sn.") and item != "sn.last"])
+            return [{"id": name, "label": f"Срез {name.split('.')[-1]}"} for name in files[-20:][::-1]]
+        except Exception:
             return []
 
-    def get_latest_sequence(self, seq_length: int, station_code: str = 'kokx', end_file_id: str = 'latest') -> Tuple[np.ndarray, List[datetime.datetime], str]:
+    def get_latest_sequence(
+        self,
+        seq_length: int,
+        station_code: str = "kokx",
+        end_file_id: str = "latest",
+    ) -> RadarSequence:
         try:
-            ftp = ftplib.FTP(self.host, timeout=10)
-            ftp.login() 
-            station_path = f"{self.base_path}SI.{station_code.lower()}/"
-            ftp.cwd(station_path)
-            
-            files = sorted([f for f in ftp.nlst() if f.startswith("sn.") and f != "sn.last"])
-            if len(files) < seq_length:
-                ftp.quit()
-                return self._get_fallback_data(seq_length, f"Недостаточно файлов для станции {station_code.upper()}.")
-            
-            if end_file_id == 'latest':
-                target_files = files[-seq_length:]
-            else:
-                if end_file_id not in files:
-                    ftp.quit()
-                    return self._get_fallback_data(seq_length, f"Файл {end_file_id} не найден.")
-                end_idx = files.index(end_file_id)
-                start_idx = end_idx - seq_length + 1
-                if start_idx < 0:
-                    ftp.quit()
-                    return self._get_fallback_data(seq_length, f"Недостаточно истории перед файлом {end_file_id}.")
-                target_files = files[start_idx:end_idx+1]
-                
-            sequence = []
-            timestamps = []
-            with tempfile.TemporaryDirectory() as tmpdir:
-                for f_name in target_files:
-                    local_path = os.path.join(tmpdir, f_name)
-                    with open(local_path, 'wb') as local_file:
-                        ftp.retrbinary(f"RETR {f_name}", local_file.write)
-                    
-                    # Try to get timestamp from FTP if possible, else use modification time
-                    try:
-                        mdtm = ftp.voidcmd(f"MDTM {f_name}")[4:].strip()
-                        ts = datetime.datetime.strptime(mdtm, '%Y%m%d%H%M%S')
-                    except:
-                        ts = datetime.datetime.now()
+            with ftplib.FTP(self.host, timeout=10) as ftp:
+                ftp.login()
+                ftp.cwd(f"{self.base_path}SI.{station_code.lower()}/")
+                files = sorted([item for item in ftp.nlst() if item.startswith("sn.") and item != "sn.last"])
+                target_files = self._select_files(files, seq_length, end_file_id)
+                frames = self._download_frames(ftp, target_files, station_code.upper())
+        except (RadarSourceError, RadarDecodeError):
+            raise
+        except Exception as exc:
+            raise RadarSourceError(f"FTP source failed for {station_code.upper()}: {exc}") from exc
+        station_name = self.STATION_MAP.get(station_code.lower(), station_code.upper())
+        return RadarSequence(
+            frames=frames,
+            source="ftp",
+            message=f"NOAA FTP: {station_name} | {len(frames)} observed frames",
+        )
 
-                    try:
-                        grid = self.decoder.decode(local_path)
-                    except:
-                        grid = self.decoder._generate_fallback_grid(local_path)
-                    sequence.append(grid)
-                    timestamps.append(ts)
-                    
-            ftp.quit()
-            station_name = self.STATION_MAP.get(station_code.lower(), station_code.upper())
-            time_label = "Последние данные" if end_file_id == 'latest' else f"Срез {end_file_id}"
-            return np.stack(sequence, axis=0), timestamps, f"NOAA FTP: {station_name} | {time_label}"
-        except Exception as e:
-            return self._get_fallback_data(seq_length, f"Ошибка FTP ({station_code}): {str(e)}. Демо-режим.")
+    @staticmethod
+    def _select_files(files: list[str], seq_length: int, end_file_id: str) -> list[str]:
+        if len(files) < seq_length:
+            raise RadarSourceError(f"Недостаточно FTP файлов: найдено {len(files)}, требуется {seq_length}.")
+        if end_file_id == "latest":
+            return files[-seq_length:]
+        if end_file_id not in files:
+            raise RadarSourceError(f"FTP файл {end_file_id} не найден.")
+        end_index = files.index(end_file_id)
+        start_index = end_index - seq_length + 1
+        if start_index < 0:
+            raise RadarSourceError(f"Недостаточно истории перед FTP файлом {end_file_id}.")
+        return files[start_index : end_index + 1]
 
-    def _get_fallback_data(self, seq_length: int, reason: str) -> Tuple[np.ndarray, List[datetime.datetime], str]:
-        sequence = []
-        timestamps = []
-        now = datetime.datetime.now()
-        for i in range(seq_length):
-            grid = self.decoder._generate_fallback_grid(f"fallback_{i}")
-            sequence.append(grid)
-            timestamps.append(now - datetime.timedelta(minutes=(seq_length-i-1)*15))
-        full_reason = f"РЕЖИМ ДЕМО (FTP ошибка: {reason})"
-        return np.stack(sequence, axis=0), timestamps, full_reason
+    def _download_frames(self, ftp: ftplib.FTP, files: list[str], station: str) -> List[RadarFrame]:
+        frames = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for filename in files:
+                local_path = os.path.join(tmpdir, filename)
+                with open(local_path, "wb") as local_file:
+                    ftp.retrbinary(f"RETR {filename}", local_file.write)
+                timestamp = self._ftp_timestamp(ftp, filename)
+                grid = self.decoder.decode(local_path)
+                frames.append(
+                    self.pipeline.frame_from_grid(
+                        grid,
+                        timestamp_utc=timestamp,
+                        station=station,
+                        source="ftp",
+                        provenance={"filename": filename},
+                    )
+                )
+        return frames
+
+    @staticmethod
+    def _ftp_timestamp(ftp: ftplib.FTP, filename: str) -> datetime.datetime:
+        try:
+            value = ftp.voidcmd(f"MDTM {filename}")[4:].strip()
+            return datetime.datetime.strptime(value, "%Y%m%d%H%M%S").replace(tzinfo=datetime.UTC)
+        except Exception as exc:
+            raise RadarSourceError(f"FTP timestamp unavailable for {filename}: {exc}") from exc
+
 
 class RainViewerAdapter(BaseRadarAdapter):
-    """Adapter for fetching latest radar data from RainViewer API."""
-    def __init__(self, grid_size=(256, 256)):
-        self.api_url = "https://api.rainviewer.com/public/weather-maps.json"
-        self.grid_size = grid_size
-        self.decoder = MRLBufrDecoder(grid_size=grid_size)
+    """Reserved for a future location-aware RainViewer tile decoder."""
 
-    def get_latest_sequence(self, seq_length: int) -> Tuple[np.ndarray, List[datetime.datetime], str]:
-        try:
-            response = requests.get(self.api_url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            
-            host = data.get('host', 'https://tilecache.rainviewer.com')
-            past_frames = data.get('radar', {}).get('past', [])
-            if len(past_frames) < seq_length:
-                return self._get_fallback_data(seq_length, "Недостаточно кадров в RainViewer.")
-                
-            latest_frames = past_frames[-seq_length:]
-            sequence = []
-            timestamps = []
-            for frame in latest_frames:
-                path = frame['path']
-                ts = datetime.datetime.fromtimestamp(frame['time'], datetime.UTC)
-                tile_url = f"{host}{path}/256/0/0/0/1/1_1.png"
-                img_resp = requests.get(tile_url, timeout=5)
-                if img_resp.status_code != 200:
-                    grid = np.zeros(self.grid_size, dtype=np.float32)
-                else:
-                    img = Image.open(io.BytesIO(img_resp.content)).convert('L')
-                    img = img.resize(self.grid_size)
-                    grid = np.array(img, dtype=np.float32) * (70.0 / 255.0)
-                sequence.append(grid)
-                timestamps.append(ts)
-                
-            return np.stack(sequence, axis=0), timestamps, "Данные получены через RainViewer API."
-        except Exception as e:
-            return self._get_fallback_data(seq_length, f"Ошибка API: {str(e)}. Активирован демо-режим.")
-
-    def _get_fallback_data(self, seq_length: int, reason: str) -> Tuple[np.ndarray, List[datetime.datetime], str]:
-        sequence = []
-        timestamps = []
-        now = datetime.datetime.now()
-        for i in range(seq_length):
-            grid = self.decoder._generate_fallback_grid(f"fallback_rv_{i}")
-            sequence.append(grid)
-            timestamps.append(now - datetime.timedelta(minutes=(seq_length-i-1)*15))
-        full_reason = f"РЕЖИМ ДЕМО (API ошибка: {reason})"
-        return np.stack(sequence, axis=0), timestamps, full_reason
-
-from typing import Tuple
+    def get_latest_sequence(self, seq_length: int) -> RadarSequence:
+        raise RadarSourceError(
+            "RainViewer operational ingestion is disabled until tile coordinates and palette decoding are configured."
+        )

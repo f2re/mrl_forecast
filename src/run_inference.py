@@ -13,14 +13,15 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'
 
 from train_nowcasting_model import ConvLSTM
-from adapters import NOAAAWSAdapter, LocalDirectoryAdapter
+from adapters import DemoRadarAdapter, NOAAAWSAdapter, LocalDirectoryAdapter
+from forecast_quality import summarize_forecast
 from map_visualization import generate_sequence_plots
 
 def main():
     parser = argparse.ArgumentParser(description="CLI для генерации MRL прогнозов (Nowcasting).")
     parser.add_argument('--model-path', type=str, required=True, help="Путь к файлу модели (например, best_model.pt)")
     parser.add_argument('--station', type=str, default='kokx', help="Код станции (например, kokx)")
-    parser.add_argument('--source', type=str, choices=['ftp', 'local'], default='ftp', help="Источник данных")
+    parser.add_argument('--source', type=str, choices=['aws', 'local', 'demo'], default='aws', help="Источник данных")
     parser.add_argument('--local-dir', type=str, default='data/processed', help="Папка для source=local")
     parser.add_argument('--output-dir', type=str, default='data/predictions', help="Папка для сохранения результатов")
     args = parser.parse_args()
@@ -39,8 +40,9 @@ def main():
 
     print(f"Загрузка модели из {model_path}...")
     checkpoint = torch.load(model_path, map_location=device)
-    input_length = checkpoint.get('input_length', 4)
-    target_length = checkpoint.get('target_length', 4)
+    hyperparameters = checkpoint.get('hyperparameters', {})
+    input_length = checkpoint.get('input_length', hyperparameters.get('input_length', 4))
+    target_length = checkpoint.get('target_length', hyperparameters.get('target_length', 4))
     
     model = ConvLSTM(
         input_channels=1, 
@@ -52,11 +54,14 @@ def main():
     model.eval()
 
     print(f"Загрузка последних данных ({input_length} кадров) для {args.station}...")
-    if args.source == 'ftp':
+    if args.source == 'aws':
         adapter = NOAAAWSAdapter()
         array, timestamps, msg = adapter.get_latest_sequence(input_length, station_code=args.station)
-    else:
+    elif args.source == 'local':
         adapter = LocalDirectoryAdapter(args.local_dir)
+        array, timestamps, msg = adapter.get_latest_sequence(input_length)
+    else:
+        adapter = DemoRadarAdapter()
         array, timestamps, msg = adapter.get_latest_sequence(input_length)
     
     print(f"Статус данных: {msg}")
@@ -71,6 +76,10 @@ def main():
 
     in_data = tensor_input.cpu().squeeze(0).squeeze(1).numpy()
     pred_data = preds.cpu().squeeze(0).squeeze(1).numpy()
+    diagnostics = summarize_forecast(pred_data * 70.0)
+    if diagnostics['uniform_field_anomaly']:
+        print(f"Ошибка: прогноз отклонен quality gate: {diagnostics}")
+        sys.exit(2)
 
     # Сохранение сырых массивов
     np.save(os.path.join(args.output_dir, f'history_{args.station}.npy'), in_data)

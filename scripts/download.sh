@@ -4,7 +4,13 @@
 # Использование: ./scripts/download.sh [STATION] [DATE] [COUNT]
 
 STATION=${1:-KOKX}
-DATE=${2:-$(date -d "yesterday" +%Y-%m-%d)}
+if [ -n "$2" ]; then
+    DATE="$2"
+elif date -v-1d +%Y-%m-%d >/dev/null 2>&1; then
+    DATE=$(date -v-1d +%Y-%m-%d)
+else
+    DATE=$(date -d "yesterday" +%Y-%m-%d)
+fi
 COUNT=${3:-50}
 
 echo "=== Запуск скачивания данных ==="

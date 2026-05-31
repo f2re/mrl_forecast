@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.interpolate import griddata
 import os
+from radar_pipeline import RadarDecodeError
 
 try:
     from metpy.io import Level3File
@@ -21,27 +22,8 @@ class NEXRADDecoder:
         self.grid_size = grid_size
         self.max_range_km = max_range_km
 
-    def _generate_fallback_grid(self, path: str) -> np.ndarray:
-        """Generates a synthetic grid if decoding fails, for demo purposes."""
-        # Use filename hash to keep it somewhat consistent for the same file
-        np.random.seed(abs(hash(path)) % (2**32))
-        grid = np.zeros(self.grid_size)
-        for _ in range(3):
-            sx, sy = np.random.randint(10, 60, size=2)
-            px, py = np.random.randint(0, self.grid_size[0], size=2)
-            intensity = np.random.uniform(20.0, 55.0)
-            
-            # Simple Gaussian blob
-            y, x = np.ogrid[:self.grid_size[0], :self.grid_size[1]]
-            dist = (x - px)**2 / sx**2 + (y - py)**2 / sy**2
-            blob = intensity * np.exp(-dist)
-            grid = np.maximum(grid, blob)
-        
-        # Add a "DEMO" hint - small dots in a corner
-        grid[0:5, 0:5] = 70.0
-        return grid
-
     def decode(self, path: str) -> np.ndarray:
+        errors = []
         # Try Level 2 first (typical for AWS)
         if pyart:
             try:
@@ -75,8 +57,7 @@ class NEXRADDecoder:
                     grid_z = np.nan_to_num(grid_z)
                     return np.clip(grid_z, 0.0, 70.0)
             except Exception as e:
-                # print(f"Level 2 decode failed: {e}")
-                pass
+                errors.append(f"Level II: {e}")
 
         # Try Level 3 (typical for FTP)
         if Level3File:
@@ -109,10 +90,10 @@ class NEXRADDecoder:
                 grid_z = np.nan_to_num(grid_z)
                 return np.clip(grid_z, 0.0, 70.0)
             except Exception as e:
-                # print(f"Level 3 decode failed: {e}")
-                pass
+                errors.append(f"Level III: {e}")
 
-        return self._generate_fallback_grid(path)
+        details = "; ".join(errors) if errors else "no decoder is available"
+        raise RadarDecodeError(f"Failed to decode NEXRAD file {path}: {details}")
 
 if __name__ == '__main__':
     decoder = NEXRADDecoder()

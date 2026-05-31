@@ -6,7 +6,7 @@ from metadata_utils import save_metadata
 
 def download_nexrad_data(station, start_date, end_file_count=100, output_root='data/raw/archive'):
     """
-    Downloads historical Level III NEXRAD data from AWS and saves metadata.
+    Downloads historical Level II NEXRAD data from AWS and saves metadata.
     """
     # Force us-east-1 region for NOAA open data bucket to avoid local config conflicts
     os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'
@@ -26,6 +26,9 @@ def download_nexrad_data(station, start_date, end_file_count=100, output_root='d
     metadata = {
         'type': 'raw_data',
         'station': station,
+        'source': 'aws',
+        'bucket': 'unidata-nexrad-level2',
+        'region': 'us-east-1',
         'date': start_date,
         'requested_count': end_file_count,
         'status': 'downloading',

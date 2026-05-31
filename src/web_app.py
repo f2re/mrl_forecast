@@ -1,4 +1,3 @@
-print("DEBUG: Starting imports...")
 import matplotlib
 matplotlib.use('Agg')
 from map_visualization import generate_sequence_plots
@@ -14,32 +13,24 @@ from typing import List, Optional, Tuple, Dict
 # Force AWS region for NEXRAD data
 os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'
 
-print("DEBUG: Importing numpy...")
 import numpy as np
-print("DEBUG: Importing flask...")
 from flask import Flask, request, render_template, redirect, url_for, jsonify
 
-print("DEBUG: Importing torch...")
 import torch
 import torch.nn as nn
 
 # Добавляем src в путь
 sys.path.append(str(pathlib.Path(__file__).parent))
 
-print("DEBUG: Importing local modules...")
-print("DEBUG: Importing ConvLSTM...")
 from train_nowcasting_model import ConvLSTM
-print("DEBUG: Importing adapters...")
-from adapters import LocalDirectoryAdapter, RainViewerAdapter, NOAAFTPAdapter, NOAAAWSAdapter
-print("DEBUG: Importing generate_sequence_plots...")
+from adapters import DemoRadarAdapter, LocalDirectoryAdapter, RainViewerAdapter, NOAAFTPAdapter, NOAAAWSAdapter
 from map_visualization import generate_sequence_plots
-print("DEBUG: Importing metadata_utils...")
 from metadata_utils import scan_inventory, load_metadata
-print("DEBUG: Importing export_utils...")
 from export_utils import save_forecast_to_netcdf
+from forecast_quality import summarize_forecast
+from map_visualization import RADAR_COORDS
+from radar_pipeline import PIPELINE_VERSION
 import datetime
-
-print("DEBUG: Imports finished.")
 
 
 app = Flask(__name__, template_folder='../templates')
@@ -103,14 +94,31 @@ model: Optional[nn.Module] = None
 INPUT_LENGTH: int = 4
 TARGET_LENGTH: int = 4
 HIDDEN_CHANNELS: List[int] = []
+CURRENT_MODEL_INFO: Dict = {}
+
+
+def is_model_usable(model_path: str) -> bool:
+    """Return whether a registry model is complete and has a checkpoint."""
+    metadata = load_metadata(model_path)
+    return bool(
+        metadata
+        and metadata.get('status') in ('completed', 'published')
+        and os.path.exists(os.path.join(model_path, 'best_model.pt'))
+    )
 
 
 def _load_model(checkpoint_path: str):
     """Load a ConvLSTM model checkpoint and update global settings."""
-    global model, INPUT_LENGTH, TARGET_LENGTH, HIDDEN_CHANNELS
+    global model, INPUT_LENGTH, TARGET_LENGTH, HIDDEN_CHANNELS, CURRENT_MODEL_INFO
     
     # If the path is a directory, look for best_model.pt inside it
     if os.path.isdir(checkpoint_path):
+        metadata = load_metadata(checkpoint_path)
+        if metadata and not is_model_usable(checkpoint_path):
+            raise ValueError(
+                f"Модель {os.path.basename(checkpoint_path)} не прошла quality gate: "
+                f"{metadata.get('status', 'unknown')}"
+            )
         candidate = os.path.join(checkpoint_path, 'best_model.pt')
         if os.path.exists(candidate):
             checkpoint_path = candidate
@@ -122,8 +130,14 @@ def _load_model(checkpoint_path: str):
         return
         
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    INPUT_LENGTH = checkpoint.get('input_length', 4)
-    TARGET_LENGTH = checkpoint.get('target_length', 4)
+    checkpoint_pipeline = checkpoint.get('pipeline_version')
+    if checkpoint_pipeline and checkpoint_pipeline != PIPELINE_VERSION:
+        raise ValueError(
+            f"Модель использует несовместимый pipeline {checkpoint_pipeline}; ожидается {PIPELINE_VERSION}"
+        )
+    hyperparameters = checkpoint.get('hyperparameters', {})
+    INPUT_LENGTH = checkpoint.get('input_length', hyperparameters.get('input_length', 4))
+    TARGET_LENGTH = checkpoint.get('target_length', hyperparameters.get('target_length', 4))
     HIDDEN_CHANNELS = checkpoint.get('hidden_channels', [32, 1])
     mdl = ConvLSTM(
         input_channels=1,
@@ -135,6 +149,11 @@ def _load_model(checkpoint_path: str):
     mdl.to(device)
     mdl.eval()
     model = mdl
+    CURRENT_MODEL_INFO = {
+        'path': checkpoint_path,
+        'model_id': os.path.basename(os.path.dirname(checkpoint_path)),
+        'pipeline_version': checkpoint_pipeline or 'legacy',
+    }
 
 
 def _preprocess_input(array: np.ndarray) -> torch.Tensor:
@@ -192,21 +211,33 @@ def predict():
                 return jsonify({'error': 'Файл не выбран'}), 400
             data = np.load(uploaded)
             array = data['arr_0'] if isinstance(data, np.lib.npyio.NpzFile) else data
+            now = datetime.datetime.now(datetime.UTC)
+            timestamps = [
+                now - datetime.timedelta(minutes=(array.shape[0] - idx - 1) * 10)
+                for idx in range(array.shape[0])
+            ]
             status_msg = "Файл загружен вручную"
         
         elif source_type == 'local':
             path = request.form.get('local_path', app.config['LOCAL_DATA_DIR'])
             adapter = LocalDirectoryAdapter(path)
-            array, timestamps, status_msg = adapter.get_latest_sequence(INPUT_LENGTH)
+            sequence = adapter.get_latest_sequence(INPUT_LENGTH)
+            array, timestamps, status_msg = sequence
         
         elif source_type == 'ftp':
             time_id = request.form.get('ftp_time', 'latest')
             adapter = NOAAFTPAdapter()
-            array, timestamps, status_msg = adapter.get_latest_sequence(INPUT_LENGTH, station_code=station_code, end_file_id=time_id)
+            sequence = adapter.get_latest_sequence(INPUT_LENGTH, station_code=station_code, end_file_id=time_id)
+            array, timestamps, status_msg = sequence
         
         elif source_type == 'aws':
             adapter = NOAAAWSAdapter()
-            array, timestamps, status_msg = adapter.get_latest_sequence(INPUT_LENGTH, station_code=station_code)
+            sequence = adapter.get_latest_sequence(INPUT_LENGTH, station_code=station_code)
+            array, timestamps, status_msg = sequence
+
+        elif source_type == 'demo':
+            sequence = DemoRadarAdapter().get_latest_sequence(INPUT_LENGTH)
+            array, timestamps, status_msg = sequence
         
         else:
             return jsonify({'error': 'Неверный тип источника'}), 400
@@ -221,6 +252,14 @@ def predict():
         
         in_data = tensor_input.cpu().squeeze(0).squeeze(1).numpy()
         pred_data = preds.cpu().squeeze(0).squeeze(1).numpy()
+        diagnostics = summarize_forecast(pred_data * 70.0)
+        source_status = sequence.status if source_type in ('local', 'ftp', 'aws', 'demo') else 'observed'
+        if diagnostics['uniform_field_anomaly']:
+            return jsonify({
+                'error': 'Прогноз отклонен: обнаружен почти однородный слой осадков.',
+                'source_status': source_status,
+                'diagnostics': diagnostics,
+            }), 422
         
         # Передаем время последнего снимка для правильной аннотации
         last_ts = timestamps[-1] if timestamps else datetime.datetime.now()
@@ -242,7 +281,7 @@ def predict():
         forecast = []
         for idx in range(TARGET_LENGTH):
             b64 = base64.b64encode(png_list[INPUT_LENGTH + idx]).decode('utf-8')
-            ts = last_ts + datetime.timedelta(minutes=(idx + 1) * 15)
+            ts = last_ts + datetime.timedelta(minutes=(idx + 1) * 10)
             label = ts.strftime('%H:%M') + " UTC (Прогноз)"
             forecast.append({'data': b64, 'label': label})
             
@@ -250,13 +289,18 @@ def predict():
         LAST_FORECAST = {
             'data': pred_data * 70.0, # De-normalize back to dBZ
             'base_time': last_ts,
-            'station': request.form.get('ftp_station', 'unknown')
+            'station': request.form.get('ftp_station', 'unknown'),
+            'source': source_type,
+            'model_id': CURRENT_MODEL_INFO.get('model_id', 'unknown'),
+            'pipeline_version': CURRENT_MODEL_INFO.get('pipeline_version', 'legacy'),
         }
             
         return jsonify({
             'history': history,
             'forecast': forecast,
-            'status': status_msg
+            'status': status_msg,
+            'source_status': source_status,
+            'diagnostics': diagnostics,
         })
 
     except Exception as exc:
@@ -288,7 +332,10 @@ def get_datasets_inventory():
 
 @app.route('/api/inventory/models', methods=['GET'])
 def get_models_inventory():
-    return jsonify(scan_inventory(app.config['MODELS_REGISTRY_DIR']))
+    items = scan_inventory(app.config['MODELS_REGISTRY_DIR'])
+    for item in items:
+        item['usable'] = is_model_usable(item['path'])
+    return jsonify(items)
 
 
 @app.route('/api/task/download', methods=['POST'])
@@ -372,7 +419,13 @@ def export_netcdf():
             forecast_data=LAST_FORECAST['data'],
             base_time=LAST_FORECAST['base_time'],
             station_id=station,
-            output_path=file_path
+            output_path=file_path,
+            station_lon=RADAR_COORDS.get(station.lower(), (None, None))[0],
+            station_lat=RADAR_COORDS.get(station.lower(), (None, None))[1],
+            model_id=LAST_FORECAST.get('model_id', 'unknown'),
+            source=LAST_FORECAST.get('source', 'unknown'),
+            pipeline_version=LAST_FORECAST.get('pipeline_version', 'legacy'),
+            interval_minutes=10,
         )
 
         from flask import send_file

@@ -13,7 +13,7 @@ pip install -r requirements.txt
 # Download real NEXRAD scans
 python src/download_archive.py --date 2024-05-20 --count 20 --output data/raw/archive
 # Process into sequences
-python src/make_dataset.py --archive-dir data/raw/archive --output-dir data/processed --seq-len 8
+python src/make_dataset.py --archive-dir data/raw/archive/<session_id> --output-dir data/processed_archive --seq-len 8
 ```
 
 ### Option B: Generate Dummy Data (Optional)
@@ -25,7 +25,7 @@ python src/generate_dummy_data.py --output-dir data/processed --num-samples 20
 ## Step 3: Train the Model
 ```bash
 python src/train_nowcasting_model.py \
-    --data-dir data/processed \
+    --data-dirs data/processed_archive/<dataset_id> \
     --epochs 5 \
     --batch-size 4 \
     --output-dir models/checkpoints
@@ -36,7 +36,13 @@ python src/train_nowcasting_model.py \
 export NOWCAST_MODEL_CHECKPOINT=models/checkpoints/best_model.pt
 python src/web_app.py
 ```
-Visit `http://localhost:5000` to see the UI.
+Visit `http://localhost:5005` to see the UI.
+
+## Diagnostics
+```bash
+bash scripts/doctor.sh
+python scripts/check_aws_source.py --station KOKX --date 2024-05-20
+```
 
 ## Troubleshooting
 - **Error: No module named 'train_nowcasting_model'**:

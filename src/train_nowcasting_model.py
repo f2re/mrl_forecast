@@ -5,8 +5,10 @@ train_nowcasting_model.py (Pro Version)
 Advanced multi-dataset training for precipitation nowcasting.
 """
 import argparse
+import csv
 import os
 import pathlib
+import traceback
 from datetime import datetime
 import numpy as np
 import matplotlib.pyplot as plt
@@ -16,6 +18,23 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader, Subset, ConcatDataset
 from metadata_utils import save_metadata, load_metadata
+from forecast_quality import advection_forecast, is_uniform_forecast, threshold_metrics_by_lead_time
+from radar_pipeline import PIPELINE_VERSION
+
+
+def temporal_split_indices(sample_count: int, overlap_frames: int, val_fraction: float):
+    """Split sliding-window samples chronologically and drop the overlap boundary."""
+    if sample_count < 2:
+        raise ValueError("At least two samples are required for train/validation split")
+    if not 0.0 < val_fraction < 1.0:
+        raise ValueError("val_fraction must be between 0 and 1")
+    boundary = int(sample_count * (1.0 - val_fraction))
+    train_stop = max(boundary - overlap_frames, 0)
+    train_indices = list(range(train_stop))
+    validation_indices = list(range(boundary, sample_count))
+    if not train_indices or not validation_indices:
+        raise ValueError("Dataset is too small for a leakage-free temporal split")
+    return train_indices, validation_indices
 
 class RadarSequenceDataset(Dataset):
     def __init__(self, data_dir: str, input_length: int = 4, target_length: int = 4):
@@ -37,6 +56,7 @@ class RadarSequenceDataset(Dataset):
         # Load [T, H, W]
         data = np.load(self.files[idx]).astype(np.float32)
         # Convert to [T, C, H, W] where C=1
+        data = np.clip(data, 0.0, 70.0)
         data = data[:, np.newaxis, :, :]
         # Normalize (0-70 dBZ -> 0-1)
         data = data / 70.0
@@ -148,7 +168,7 @@ class ConvLSTM(nn.Module):
             for _ in range(self.output_steps):
                 # Apply output_conv to the last hidden state to get the predicted frame
                 # which will be used as input for the next step
-                pred_frame = self.output_conv(current_h)
+                pred_frame = torch.sigmoid(self.output_conv(current_h))
                 predictions.append(pred_frame)
                 
                 # Feed the predicted frame back through all layers
@@ -167,7 +187,9 @@ class ConvLSTM(nn.Module):
             return prediction_tensor, last_state_list
 
         # If not predicting steps, apply output_conv to the entire sequence
-        final_output = self.output_conv(layer_output_list[-1].view(-1, self.hidden_dim[-1], h, w))
+        final_output = torch.sigmoid(
+            self.output_conv(layer_output_list[-1].view(-1, self.hidden_dim[-1], h, w))
+        )
         final_output = final_output.view(b, seq_len, self.input_dim, h, w)
         
         if not self.batch_first:
@@ -223,6 +245,71 @@ def validate_epoch(model, dataloader, criterion, device):
     return total_loss / len(dataloader)
 
 
+def quality_gate_passes(metrics: Dict[str, float]) -> bool:
+    """Only publish models that beat persistence and avoid uniform precipitation."""
+    return (
+        metrics["model_mse"] < metrics["persistence_mse"]
+        and metrics["model_mse"] < metrics.get("advection_mse", float("inf"))
+        and not metrics["uniform_field_anomaly"]
+    )
+
+
+def evaluate_model_quality(model, dataloader, device):
+    """Compare the trained model with persistence on leakage-free validation data."""
+    model.eval()
+    model_losses = []
+    persistence_losses = []
+    advection_losses = []
+    uniform_field_anomaly = False
+    all_forecasts = []
+    all_targets = []
+    with torch.no_grad():
+        for x, y in dataloader:
+            x, y = x.to(device), y.to(device)
+            output, _ = model(x)
+            persistence = x[:, -1:, ...].expand_as(y)
+            model_losses.append(torch.mean((output - y) ** 2).item())
+            persistence_losses.append(torch.mean((persistence - y) ** 2).item())
+            output_values = output.cpu().numpy()
+            target_values = y.cpu().numpy()
+            history_values = x.cpu().numpy()
+            for history, forecast, target in zip(history_values, output_values, target_values):
+                values_dbz = forecast[:, 0] * 70.0
+                uniform_field_anomaly = uniform_field_anomaly or is_uniform_forecast(values_dbz)
+                advection = advection_forecast(history[:, 0] * 70.0, forecast.shape[0]) / 70.0
+                advection_losses.append(float(np.mean((advection - target[:, 0]) ** 2)))
+                all_forecasts.append(values_dbz)
+                all_targets.append(target[:, 0] * 70.0)
+    metrics = {
+        "model_mse": float(np.mean(model_losses)),
+        "persistence_mse": float(np.mean(persistence_losses)),
+        "advection_mse": float(np.mean(advection_losses)),
+        "uniform_field_anomaly": bool(uniform_field_anomaly),
+        "threshold_metrics": threshold_metrics_by_lead_time(
+            np.stack(all_forecasts, axis=0),
+            np.stack(all_targets, axis=0),
+        ),
+    }
+    metrics["quality_gate_passed"] = quality_gate_passes(metrics)
+    return metrics
+
+
+def build_temporal_datasets(datasets, val_split):
+    """Create leakage-resistant temporal subsets for every source dataset."""
+    train_parts = []
+    validation_parts = []
+    for dataset in datasets:
+        overlap_frames = dataset.input_length + dataset.target_length - 1
+        train_indices, validation_indices = temporal_split_indices(
+            len(dataset),
+            overlap_frames,
+            val_split,
+        )
+        train_parts.append(Subset(dataset, train_indices))
+        validation_parts.append(Subset(dataset, validation_indices))
+    return ConcatDataset(train_parts), ConcatDataset(validation_parts)
+
+
 def save_plots(model_dir, history):
     plt.figure(figsize=(10, 6))
     plt.plot(history['train_loss'], label='Train Loss')
@@ -234,6 +321,19 @@ def save_plots(model_dir, history):
     plt.grid(True)
     plt.savefig(os.path.join(model_dir, 'learning_curve.png'))
     plt.close()
+
+
+def save_history(model_dir, history):
+    """Persist epoch metrics incrementally so interrupted runs remain inspectable."""
+    path = os.path.join(model_dir, 'history.csv')
+    with open(path, 'w', newline='', encoding='utf-8') as file:
+        writer = csv.writer(file)
+        writer.writerow(['epoch', 'train_loss', 'val_loss'])
+        for epoch, (train_loss, val_loss) in enumerate(
+            zip(history['train_loss'], history['val_loss']),
+            start=1,
+        ):
+            writer.writerow([epoch, train_loss, val_loss])
 
 def main():
     parser = argparse.ArgumentParser()
@@ -255,20 +355,30 @@ def main():
     data_dirs = args.data_dirs.split(',')
     all_datasets = []
     provenance_data = []
+    pipeline_versions = set()
     for d in data_dirs:
         if os.path.exists(d):
             meta = load_metadata(d)
+            pipeline_version = (meta or {}).get('pipeline', {}).get('pipeline_version')
+            if (meta or {}).get('status') != 'completed' or not pipeline_version:
+                print(f"Skipping incompatible dataset {d}: completed pipeline metadata is required")
+                continue
+            pipeline_versions.add(pipeline_version)
             ds = RadarSequenceDataset(d, args.input_length, args.target_length)
             all_datasets.append(ds)
             provenance_data.append({
                 "dataset_id": os.path.basename(d),
                 "station": meta.get('station', 'unknown') if meta else 'unknown',
-                "samples": len(ds)
+                "samples": len(ds),
+                "pipeline_version": pipeline_version,
             })
             print(f"Loaded dataset from {d} ({len(ds)} samples)")
 
     if not all_datasets:
         print("No datasets found!")
+        return
+    if pipeline_versions != {PIPELINE_VERSION}:
+        print(f"Incompatible pipeline versions: {sorted(pipeline_versions)}")
         return
 
     full_dataset = ConcatDataset(all_datasets)
@@ -278,19 +388,11 @@ def main():
         print("Error: Total number of samples is 0. Cannot proceed with training.")
         return
 
-    num_val = int(total_samples * args.val_split)
-    num_train = total_samples - num_val
-    
-    # Ensure at least one sample in each split if possible
-    if num_train == 0 and total_samples > 0:
-        num_train = 1
-        num_val = total_samples - 1
-    
-    if num_train == 0:
-        print("Error: Training set is empty. Decrease val-split or add more data.")
+    try:
+        train_ds, val_ds = build_temporal_datasets(all_datasets, args.val_split)
+    except ValueError as exc:
+        print(f"Error: {exc}")
         return
-
-    train_ds, val_ds = torch.utils.data.random_split(full_dataset, [num_train, num_val])
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size)
@@ -299,7 +401,7 @@ def main():
     hidden_channels = args.hidden_channels
     model = ConvLSTM(
         input_dim=1, 
-        hidden_dim=[hidden_channels, 1], 
+        hidden_dim=[hidden_channels, hidden_channels],
         kernel_size=(3, 3), 
         num_layers=2, 
         batch_first=True,
@@ -318,6 +420,7 @@ def main():
         'model_id': model_id,
         'hyperparameters': vars(args),
         'training_data': provenance_data,
+        'pipeline_version': PIPELINE_VERSION,
         'status': 'training',
         'timestamp_created': datetime.now().isoformat()
     }
@@ -326,31 +429,58 @@ def main():
     history = {'train_loss': [], 'val_loss': []}
     best_val_loss = float('inf')
 
-    for epoch in range(1, args.epochs + 1):
-        train_loss = train_epoch(model, train_loader, criterion, optimizer, device)
-        val_loss = validate_epoch(model, val_loader, criterion, device)
-        
-        history['train_loss'].append(train_loss)
-        history['val_loss'].append(val_loss)
-        
-        print(f"Epoch {epoch}/{args.epochs}: train_loss={train_loss:.6f}, val_loss={val_loss:.6f}")
-        
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            checkpoint_path = os.path.join(model_dir, 'best_model.pt')
-            torch.save({
-                'model_state_dict': model.state_dict(),
-                'hyperparameters': vars(args),
-                'metrics': {'best_val_loss': best_val_loss, 'epoch': epoch}
-            }, checkpoint_path)
-            
-            metadata['metrics'] = {'best_val_loss': best_val_loss, 'best_epoch': epoch}
+    try:
+        for epoch in range(1, args.epochs + 1):
+            train_loss = train_epoch(model, train_loader, criterion, optimizer, device)
+            val_loss = validate_epoch(model, val_loader, criterion, device)
+            quality_metrics = evaluate_model_quality(model, val_loader, device)
+            history['train_loss'].append(train_loss)
+            history['val_loss'].append(val_loss)
+            print(
+                f"Epoch {epoch}/{args.epochs}: train_loss={train_loss:.6f}, "
+                f"val_loss={val_loss:.6f}, persistence_mse={quality_metrics['persistence_mse']:.6f}"
+            )
+            save_plots(model_dir, history)
+            save_history(model_dir, history)
+            metadata['current_epoch'] = epoch
+            metadata['metrics'] = {
+                'best_val_loss': min(best_val_loss, val_loss),
+                'best_epoch': metadata.get('metrics', {}).get('best_epoch', epoch),
+                **quality_metrics,
+            }
             save_metadata(model_dir, metadata)
 
-    metadata['status'] = 'completed'
-    save_metadata(model_dir, metadata)
-    save_plots(model_dir, history)
-    print(f"Training complete. Model saved to {model_dir}")
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                checkpoint_path = os.path.join(model_dir, 'best_model.pt')
+                torch.save({
+                    'model_state_dict': model.state_dict(),
+                    'hyperparameters': vars(args),
+                    'input_length': args.input_length,
+                    'target_length': args.target_length,
+                    'hidden_channels': [hidden_channels, hidden_channels],
+                    'pipeline_version': PIPELINE_VERSION,
+                    'metrics': {'best_val_loss': best_val_loss, 'epoch': epoch, **quality_metrics},
+                }, checkpoint_path)
+                metadata['metrics'] = {
+                    'best_val_loss': best_val_loss,
+                    'best_epoch': epoch,
+                    **quality_metrics,
+                }
+                save_metadata(model_dir, metadata)
+        metadata['status'] = (
+            'completed'
+            if metadata['metrics']['quality_gate_passed']
+            else 'rejected_quality_gate'
+        )
+        save_metadata(model_dir, metadata)
+        print(f"Training complete. Model saved to {model_dir}")
+    except Exception as exc:
+        metadata['status'] = 'failed'
+        metadata['error'] = str(exc)
+        metadata['traceback'] = traceback.format_exc()
+        save_metadata(model_dir, metadata)
+        raise
 
 if __name__ == '__main__':
     main()

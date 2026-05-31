@@ -7,6 +7,7 @@ except ImportError:
 from scipy.interpolate import griddata
 import argparse
 from typing import Optional, Tuple
+from radar_pipeline import RadarDecodeError
 
 class MRLBufrDecoder:
     """
@@ -16,20 +17,6 @@ class MRLBufrDecoder:
     def __init__(self, grid_size=(256, 256), max_range_km=250.0):
         self.grid_size = grid_size
         self.max_range_km = max_range_km
-
-    def _generate_fallback_grid(self, path: str) -> np.ndarray:
-        """Generates a synthetic grid if decoding fails, for demo purposes."""
-        # Use filename hash to keep it somewhat consistent for the same file
-        np.random.seed(abs(hash(path)) % (2**32))
-        grid = np.zeros(self.grid_size)
-        center_x, center_y = self.grid_size[0]//2, self.grid_size[1]//2
-        for _ in range(3):
-            rx = np.random.randint(-50, 50)
-            ry = np.random.randint(-50, 50)
-            yy, xx = np.mgrid[0:self.grid_size[0], 0:self.grid_size[1]]
-            blob = np.exp(-((xx - (center_x + rx))**2 + (yy - (center_y + ry))**2) / 400.0)
-            grid += blob * np.random.uniform(10, 40)
-        return grid
 
     def decode(self, bufr_path: str) -> np.ndarray:
         """
@@ -46,8 +33,7 @@ class MRLBufrDecoder:
             # Check for BUFR marker
             header = f.read(4)
             if header != b'BUFR':
-                print(f"Warning: {bufr_path} is not a valid BUFR file. Generating placeholder.")
-                return self._generate_fallback_grid(bufr_path)
+                raise RadarDecodeError(f"{bufr_path} is not a valid BUFR file")
             f.seek(0)
             
             while True:
@@ -80,7 +66,7 @@ class MRLBufrDecoder:
                     eccodes.codes_release(bufr)
         
         if not reflectivity:
-            return self._generate_fallback_grid(bufr_path)
+            raise RadarDecodeError(f"No reflectivity descriptors found in {bufr_path}")
             
         return self._polar_to_cartesian(
             np.array(azimuths), 
