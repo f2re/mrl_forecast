@@ -10,6 +10,7 @@ import numpy as np
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
+from config import FORECAST_STEP_MINUTES  # noqa: E402
 from make_dataset import process_archive_directory, regular_frame_segments  # noqa: E402
 from radar_pipeline import PIPELINE_VERSION, RadarFrame  # noqa: E402
 from train_nowcasting_model import temporal_split_indices  # noqa: E402
@@ -21,12 +22,12 @@ class _FixturePipeline:
             "pipeline_version": PIPELINE_VERSION,
             "product": "lowest_elevation_reflectivity",
             "units": "dBZ",
-            "time_step_minutes": 10,
+            "time_step_minutes": FORECAST_STEP_MINUTES,
             "grid": {"width": 4, "height": 4, "radius_km": 250.0, "crs": "local_aeqd"},
         }
 
     def process_file(self, path, *, timestamp_utc, station, source):
-        value = float(Path(path).name[-1])
+        value = float(Path(path).name[-5]) if Path(path).name[-5].isdigit() else 1.0
         data = np.full((4, 4), value, dtype=np.float32)
         return RadarFrame(
             data=data,
@@ -46,8 +47,8 @@ class DatasetPipelineTest(unittest.TestCase):
             archive = root / "archive"
             output = root / "processed"
             archive.mkdir()
-            for index in range(3):
-                (archive / f"KOKX20240520_00{index}000_V06").write_bytes(b"fixture")
+            for minutes in (0, 15, 30):
+                (archive / f"KOKX20240520_00{minutes:02d}00_V06").write_bytes(b"fixture")
             (archive / "metadata.json").write_text(
                 json.dumps(
                     {
@@ -69,6 +70,7 @@ class DatasetPipelineTest(unittest.TestCase):
             metadata = json.loads((Path(dataset_dir) / "metadata.json").read_text(encoding="utf-8"))
             manifest = json.loads((Path(dataset_dir) / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(metadata["pipeline"]["pipeline_version"], PIPELINE_VERSION)
+            self.assertEqual(metadata["pipeline"]["time_step_minutes"], FORECAST_STEP_MINUTES)
             self.assertEqual(metadata["sample_count"], 2)
             self.assertEqual(len(manifest["frames"]), 3)
             self.assertEqual(len(manifest["sequences"]), 2)
@@ -94,12 +96,12 @@ class DatasetPipelineTest(unittest.TestCase):
                 station="KOKX",
                 source="fixture",
             )
-            for minutes in (0, 5, 10, 20, 60, 70)
+            for minutes in (0, 15, 30, 60, 75)
         ]
 
-        segments = regular_frame_segments(frames, step_minutes=10, tolerance_minutes=4)
+        segments = regular_frame_segments(frames, step_minutes=FORECAST_STEP_MINUTES, tolerance_minutes=4)
 
-        self.assertEqual([[frame.timestamp_utc.minute for frame in segment] for segment in segments], [[0, 10, 20], [0, 10]])
+        self.assertEqual([[frame.timestamp_utc.minute for frame in segment] for segment in segments], [[0, 15, 30], [0, 15]])
 
 
 if __name__ == "__main__":
