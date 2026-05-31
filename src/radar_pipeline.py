@@ -8,7 +8,9 @@ from typing import Any, Callable, Dict, Iterator, List, Optional
 
 import numpy as np
 
-PIPELINE_VERSION = "radar-grid-v1"
+from config import FORECAST_STEP_MINUTES
+
+PIPELINE_VERSION = "radar-grid-v2-15min"
 PRODUCT = "lowest_elevation_reflectivity"
 UNITS = "dBZ"
 
@@ -40,7 +42,7 @@ class RadarPipelineConfig:
     height: int = 256
     radius_km: float = 250.0
     vertical_limit_m: float = 10_000.0
-    time_step_minutes: int = 10
+    time_step_minutes: int = FORECAST_STEP_MINUTES
     weighting_function: str = "Barnes2"
     pipeline_version: str = PIPELINE_VERSION
     product: str = PRODUCT
@@ -265,7 +267,7 @@ class DemoRadarAdapter:
         now = datetime.datetime.now(datetime.UTC)
         frames = []
         for index in range(seq_length):
-            timestamp = now - datetime.timedelta(minutes=(seq_length - index - 1) * 10)
+            timestamp = now - datetime.timedelta(minutes=(seq_length - index - 1) * FORECAST_STEP_MINUTES)
             frames.append(
                 RadarFrame(
                     data=self._generate_grid(f"demo_{index}"),
@@ -299,4 +301,3 @@ class DemoRadarAdapter:
             )
             grid = np.maximum(grid, blob)
         return grid
-
