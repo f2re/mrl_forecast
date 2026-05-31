@@ -17,6 +17,7 @@ from typing import Tuple, List, Dict
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader, Subset, ConcatDataset
+from config import FORECAST_STEP_MINUTES, MAX_DBZ
 from metadata_utils import save_metadata, load_metadata
 from forecast_quality import advection_forecast, is_uniform_forecast, threshold_metrics_by_lead_time
 from radar_pipeline import PIPELINE_VERSION
@@ -36,6 +37,7 @@ def temporal_split_indices(sample_count: int, overlap_frames: int, val_fraction:
         raise ValueError("Dataset is too small for a leakage-free temporal split")
     return train_indices, validation_indices
 
+
 class RadarSequenceDataset(Dataset):
     def __init__(self, data_dir: str, input_length: int = 4, target_length: int = 4):
         self.data_dir = pathlib.Path(data_dir)
@@ -44,7 +46,6 @@ class RadarSequenceDataset(Dataset):
         self.target_length = target_length
 
         if len(self.files) > 0:
-            # Check the first file to verify sequence length
             test_data = np.load(self.files[0])
             actual_len = test_data.shape[0]
             if actual_len < (input_length + target_length):
@@ -52,19 +53,16 @@ class RadarSequenceDataset(Dataset):
 
     def __len__(self):
         return len(self.files)
+
     def __getitem__(self, idx):
-        # Load [T, H, W]
         data = np.load(self.files[idx]).astype(np.float32)
-        # Convert to [T, C, H, W] where C=1
-        data = np.clip(data, 0.0, 70.0)
+        data = np.clip(data, 0.0, MAX_DBZ)
         data = data[:, np.newaxis, :, :]
-        # Normalize (0-70 dBZ -> 0-1)
-        data = data / 70.0
-        
-        # Split history and target
+        data = data / MAX_DBZ
         x = data[:self.input_length]
         y = data[self.input_length : self.input_length + self.target_length]
         return torch.from_numpy(x), torch.from_numpy(y)
+
 
 class ConvLSTMCell(nn.Module):
     def __init__(self, input_dim, hidden_dim, kernel_size, bias):
@@ -98,100 +96,72 @@ class ConvLSTMCell(nn.Module):
         return (torch.zeros(batch_size, self.hidden_dim, height, width, device=self.conv.weight.device),
                 torch.zeros(batch_size, self.hidden_dim, height, width, device=self.conv.weight.device))
 
+
 class ConvLSTM(nn.Module):
     def __init__(self, input_dim=1, hidden_dim=None, kernel_size=(3, 3), num_layers=None, batch_first=True, bias=True,
                  input_channels=None, hidden_channels=None, output_steps=None):
         super(ConvLSTM, self).__init__()
-        
-        # Flexibility for different arg names
         self.input_dim = input_channels if input_channels is not None else input_dim
         self.hidden_dim = hidden_channels if hidden_channels is not None else hidden_dim
         if self.hidden_dim is None:
             self.hidden_dim = [16, 32]
-            
         self.num_layers = len(self.hidden_dim)
         self.batch_first = batch_first
         self.bias = bias
         self.output_steps = output_steps
-        
         self.kernel_size = self._check_kernel_size_consistency(kernel_size)
         self.kernel_size = self._extend_for_multilayer(self.kernel_size, self.num_layers)
-        
         if not len(self.kernel_size) == len(self.hidden_dim) == self.num_layers:
             raise ValueError('Inconsistent list lengths.')
-            
         cells = []
         for i in range(0, self.num_layers):
             cur_input_dim = self.input_dim if i == 0 else self.hidden_dim[i - 1]
             cells.append(ConvLSTMCell(input_dim=cur_input_dim, hidden_dim=self.hidden_dim[i],
-                                          kernel_size=self.kernel_size[i], bias=self.bias))
+                                           kernel_size=self.kernel_size[i], bias=self.bias))
         self.cells = nn.ModuleList(cells)
-        
-        # Final convolution to map hidden state back to input dimension
         self.output_conv = nn.Conv2d(in_channels=self.hidden_dim[-1], out_channels=self.input_dim, kernel_size=1)
 
     def forward(self, input_tensor, hidden_state=None):
         if not self.batch_first:
             input_tensor = input_tensor.permute(1, 0, 2, 3, 4)
-            
         b, t, _, h, w = input_tensor.size()
-        
-        # Initialize hidden state
         if hidden_state is None:
             hidden_state = self._init_hidden(batch_size=b, image_size=(h, w))
-            
         layer_output_list = []
         last_state_list = []
-        
         seq_len = input_tensor.size(1)
         cur_layer_input = input_tensor
-        
-        # Encoding/Processing Phase
         for layer_idx in range(self.num_layers):
             h_state, c_state = hidden_state[layer_idx]
             output_inner = []
             for t in range(seq_len):
                 h_state, c_state = self.cells[layer_idx](input_tensor=cur_layer_input[:, t, :, :, :], cur_state=[h_state, c_state])
                 output_inner.append(h_state)
-            
             layer_output = torch.stack(output_inner, dim=1)
             cur_layer_input = layer_output
             layer_output_list.append(layer_output)
             last_state_list.append([h_state, c_state])
-            
-        # Prediction Phase (Autoregressive)
         if self.output_steps is not None:
             predictions = []
-            # We take the last hidden state and output to start prediction
             current_h = layer_output_list[-1][:, -1, :, :, :]
-            
             for _ in range(self.output_steps):
-                # Apply output_conv to the last hidden state to get the predicted frame
-                # which will be used as input for the next step
                 pred_frame = torch.sigmoid(self.output_conv(current_h))
                 predictions.append(pred_frame)
-                
-                # Feed the predicted frame back through all layers
                 prev_layer_h = pred_frame
                 for layer_idx in range(self.num_layers):
                     h_s, c_s = last_state_list[layer_idx]
                     h_s, c_s = self.cells[layer_idx](input_tensor=prev_layer_h, cur_state=[h_s, c_s])
                     last_state_list[layer_idx] = [h_s, c_s]
                     prev_layer_h = h_s
-                
                 current_h = prev_layer_h
-                
             prediction_tensor = torch.stack(predictions, dim=1)
             if not self.batch_first:
                 return prediction_tensor.permute(1, 0, 2, 3, 4), last_state_list
             return prediction_tensor, last_state_list
-
-        # If not predicting steps, apply output_conv to the entire sequence
         final_output = torch.sigmoid(
             self.output_conv(layer_output_list[-1].view(-1, self.hidden_dim[-1], h, w))
         )
         final_output = final_output.view(b, seq_len, self.input_dim, h, w)
-        
         if not self.batch_first:
             return final_output.permute(1, 0, 2, 3, 4), last_state_list
         return final_output, last_state_list
@@ -220,6 +190,8 @@ class ConvLSTM(nn.Module):
         if not isinstance(param, list):
             param = [param] * num_layers
         return param
+
+
 def train_epoch(model, dataloader, criterion, optimizer, device):
     model.train()
     total_loss = 0
@@ -232,6 +204,7 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
         optimizer.step()
         total_loss += loss.item()
     return total_loss / len(dataloader)
+
 
 def validate_epoch(model, dataloader, criterion, device):
     model.eval()
@@ -274,12 +247,12 @@ def evaluate_model_quality(model, dataloader, device):
             target_values = y.cpu().numpy()
             history_values = x.cpu().numpy()
             for history, forecast, target in zip(history_values, output_values, target_values):
-                values_dbz = forecast[:, 0] * 70.0
+                values_dbz = forecast[:, 0] * MAX_DBZ
                 uniform_field_anomaly = uniform_field_anomaly or is_uniform_forecast(values_dbz)
-                advection = advection_forecast(history[:, 0] * 70.0, forecast.shape[0]) / 70.0
+                advection = advection_forecast(history[:, 0] * MAX_DBZ, forecast.shape[0]) / MAX_DBZ
                 advection_losses.append(float(np.mean((advection - target[:, 0]) ** 2)))
                 all_forecasts.append(values_dbz)
-                all_targets.append(target[:, 0] * 70.0)
+                all_targets.append(target[:, 0] * MAX_DBZ)
     metrics = {
         "model_mse": float(np.mean(model_losses)),
         "persistence_mse": float(np.mean(persistence_losses)),
@@ -335,6 +308,7 @@ def save_history(model_dir, history):
         ):
             writer.writerow([epoch, train_loss, val_loss])
 
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data-dirs', required=True, help="Comma-separated directories with processed datasets")
@@ -351,7 +325,6 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # Load multiple datasets
     data_dirs = args.data_dirs.split(',')
     all_datasets = []
     provenance_data = []
@@ -371,6 +344,7 @@ def main():
                 "station": meta.get('station', 'unknown') if meta else 'unknown',
                 "samples": len(ds),
                 "pipeline_version": pipeline_version,
+                "time_step_minutes": (meta or {}).get('pipeline', {}).get('time_step_minutes'),
             })
             print(f"Loaded dataset from {d} ({len(ds)} samples)")
 
@@ -383,7 +357,6 @@ def main():
 
     full_dataset = ConcatDataset(all_datasets)
     total_samples = len(full_dataset)
-    
     if total_samples == 0:
         print("Error: Total number of samples is 0. Cannot proceed with training.")
         return
@@ -397,20 +370,18 @@ def main():
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size)
 
-    # Initialize model
     hidden_channels = args.hidden_channels
     model = ConvLSTM(
-        input_dim=1, 
+        input_dim=1,
         hidden_dim=[hidden_channels, hidden_channels],
-        kernel_size=(3, 3), 
-        num_layers=2, 
+        kernel_size=(3, 3),
+        num_layers=2,
         batch_first=True,
-        output_steps=args.target_length
+        output_steps=args.target_length,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     criterion = nn.MSELoss()
 
-    # Setup output
     model_id = f"model_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     model_dir = os.path.join(args.output_dir, model_id)
     os.makedirs(model_dir, exist_ok=True)
@@ -418,11 +389,14 @@ def main():
     metadata = {
         'type': 'model',
         'model_id': model_id,
+        'model_architecture': 'convlstm_baseline',
         'hyperparameters': vars(args),
         'training_data': provenance_data,
         'pipeline_version': PIPELINE_VERSION,
+        'forecast_step_minutes': FORECAST_STEP_MINUTES,
+        'horizon_minutes': args.target_length * FORECAST_STEP_MINUTES,
         'status': 'training',
-        'timestamp_created': datetime.now().isoformat()
+        'timestamp_created': datetime.now().isoformat(),
     }
     save_metadata(model_dir, metadata)
 
@@ -460,6 +434,8 @@ def main():
                     'target_length': args.target_length,
                     'hidden_channels': [hidden_channels, hidden_channels],
                     'pipeline_version': PIPELINE_VERSION,
+                    'forecast_step_minutes': FORECAST_STEP_MINUTES,
+                    'model_architecture': 'convlstm_baseline',
                     'metrics': {'best_val_loss': best_val_loss, 'epoch': epoch, **quality_metrics},
                 }, checkpoint_path)
                 metadata['metrics'] = {
@@ -481,6 +457,7 @@ def main():
         metadata['traceback'] = traceback.format_exc()
         save_metadata(model_dir, metadata)
         raise
+
 
 if __name__ == '__main__':
     main()
