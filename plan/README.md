@@ -11,19 +11,19 @@
 | Блок | Текущий статус | Комментарий |
 | --- | --- | --- |
 | Граница доверия к данным | Частично закрыто | Есть `RadarFrame`, `RadarSequence`, `status`, `qc`, `provenance`, отдельный `DemoRadarAdapter`; ошибки источника не должны превращаться в синтетику. |
-| Версионированный pipeline | Частично закрыто | Есть `radar-grid-v1`, `product=lowest_elevation_reflectivity`, `units=dBZ`, единая сетка 256×256, радиус 250 км. |
+| Версионированный pipeline | Обновлен до v2 | Введен `radar-grid-v2-15min`, центральный `FORECAST_STEP_MINUTES=15`, продукт `lowest_elevation_reflectivity`, единицы `dBZ`, сетка 256×256, радиус 250 км. |
 | NOAA/AWS ingestion | Базово закрыто | Есть `configure_public_aws_region()`, фильтрация `_MDM`, `check_aws_source.py`. Это оставить как отладочный/референсный источник. |
-| География визуализации | Базово закрыто | Есть AEQD → Web Mercator, north-up overlay, range rings, azimuth lines, отказ от неизвестной станции. |
-| Датасет и manifest | Частично закрыто | Есть `manifest.json`, metadata, regular segment selection и защита от части temporal leakage. |
-| ConvLSTM baseline | Частично закрыто | Есть текущая ConvLSTM, persistence/advection comparison, threshold metrics, uniform-field gate. |
-| Registry/UI | Частично закрыто | Модель с `training`/`failed`/`rejected_quality_gate` не должна использоваться как operational. |
-| NetCDF export | Частично закрыто | Есть CRS и `lead_time`, но нужно заменить 10-минутный default и усилить metadata. |
+| География визуализации | Базово закрыто | Есть AEQD → Web Mercator, north-up overlay, range rings, azimuth lines, отказ от неизвестной станции; default interval теперь 15 минут. |
+| Датасет и manifest | Частично закрыто | Есть `manifest.json`, metadata, regular segment selection и защита от части temporal leakage; требуется `valid_mask` и `.npz` dataset format. |
+| ConvLSTM baseline | Частично закрыто | Есть текущая ConvLSTM, persistence/advection comparison, threshold metrics, uniform-field gate; metadata пишет 15-минутный forecast contract. |
+| Registry/UI | Частично закрыто | Модель с `training`/`failed`/`rejected_quality_gate` не должна использоваться как operational; API теперь возвращает lead time/confidence поля. |
+| NetCDF export | Обновлен до v2 | Есть CRS, `lead_time_minutes`, `valid_time_utc`, `forecast_step_minutes`, provenance и `not_official_warning=true`. |
 
 ---
 
 ## 2. Главные незакрытые дефекты
 
-1. В коде всё еще доминирует 10-минутный шаг, а целевая постановка требует 15 минут.
+1. Реальные датасеты еще надо пересобрать под `radar-grid-v2-15min`.
 2. `dBZ` используется как обычное числовое поле; физические штрафы нельзя считать напрямую на логарифмической шкале.
 3. `valid_mask` хранится в `RadarFrame`, но не используется как вход модели и как mask в loss.
 4. `нет эха`, `нет данных`, `masked pixel`, `край радиуса`, `отфильтрованный clutter` фактически смешиваются при обучении.
@@ -32,7 +32,7 @@
 7. Текущий advection baseline — глобальный integer shift, а не полноценный локальный optical-flow/block-motion baseline.
 8. ConvLSTM + MSE недостаточна для 1–3 часов: она сглаживает сильные ядра и неявно усредняет сценарии.
 9. 2–3-часовой прогноз по одному каналу отражаемости должен маркироваться как пониженная/экспериментальная достоверность.
-10. UI и экспорт должны явно писать, что это экспериментальный прогноз отражаемости, не официальный прогноз опасных явлений.
+10. Background tasks в Flask временно отключены до внедрения безопасного job runner; запуск через `scripts/*.sh` остается ручным.
 
 ---
 
@@ -41,14 +41,14 @@
 | Приоритет | Документ | Смысл этапа | Статус |
 | --- | --- | --- | --- |
 | P0 | [00-audit-baseline.md](00-audit-baseline.md) | Зафиксировать текущее реализованное состояние и долги | Актуализировано |
-| P0 | [01-data-trust-boundary.md](01-data-trust-boundary.md) | Перевести весь проект на контракт времени 15 минут | К выполнению |
-| P0 | [02-unified-radar-pipeline.md](02-unified-radar-pipeline.md) | Развести `нет эха` и `нет данных`, протащить `valid_mask` в dataset/loss | К выполнению |
+| P0 | [01-data-trust-boundary.md](01-data-trust-boundary.md) | Перевести весь проект на контракт времени 15 минут | Частично реализовано |
+| P0 | [02-unified-radar-pipeline.md](02-unified-radar-pipeline.md) | Развести `нет эха` и `нет данных`, протащить `valid_mask` в dataset/loss | Следующий этап |
 | P0 | [03-geospatial-rendering.md](03-geospatial-rendering.md) | Унифицировать BUFR, timestamp, gridding и геометрию | К выполнению |
 | P1 | [04-aws-ingestion.md](04-aws-ingestion.md) | Усилить baseline: persistence, global shift, block-motion/optical-flow | К выполнению |
 | P1 | [05-dataset-quality.md](05-dataset-quality.md) | Пересобрать датасеты под 15 минут, QC, split, sampling | К выполнению |
 | P1 | [06-model-training.md](06-model-training.md) | Реализовать `MRL-PhysLite`: motion + advection + residual ConvGRU | К выполнению |
-| P1 | [07-registry-ui-observability.md](07-registry-ui-observability.md) | Registry, API, UI, confidence labels, model card | К выполнению |
-| P2 | [08-export-testing-operations.md](08-export-testing-operations.md) | NetCDF, тесты, `doctor`, эксплуатационный hardening | К выполнению |
+| P1 | [07-registry-ui-observability.md](07-registry-ui-observability.md) | Registry, API, UI, confidence labels, model card | Частично реализовано |
+| P2 | [08-export-testing-operations.md](08-export-testing-operations.md) | NetCDF, тесты, `doctor`, эксплуатационный hardening | Частично реализовано |
 | P2 | [09-russian-dmrl-track.md](09-russian-dmrl-track.md) | Реальные российские МРЛ/ДМРЛ как отдельный источник | Ожидает fixtures/источник |
 
 ---
@@ -98,14 +98,15 @@ forecast dBZ на +15/+30/+45/+60 ... минут
 
 ---
 
-## 6. Первый актуальный PR
+## 6. Следующий PR
 
-Первым PR делать только безопасную инфраструктурную правку:
+Следующим PR закрывать этап 02:
 
-1. Добавить `src/config.py`.
-2. Ввести `FORECAST_STEP_MINUTES = 15`.
-3. Заменить жестко заданные 10 минут в pipeline, web labels, map visualization и NetCDF export.
-4. Добавить тесты на `+15/+30/+45/+60`.
-5. Обновить metadata dataset/model/export.
+1. Перейти от `.npy` к `.npz` sequence format.
+2. Сохранять `valid_mask` вместе с reflectivity.
+3. Добавить `src/datasets.py`.
+4. Добавить `src/losses.py` с masked loss.
+5. Обновить train loader под `x`, `y`, `x_mask`, `y_mask`.
+6. Добавить тесты `tests/test_masks.py`.
 
-После этого пересобрать датасеты. Старые датасеты и модели с 10-минутным контрактом считать legacy.
+После этого переходить к BUFR/timestamp/gridding унификации.
