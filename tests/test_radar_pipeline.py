@@ -8,6 +8,7 @@ import numpy as np
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
+from config import FORECAST_STEP_MINUTES  # noqa: E402
 from radar_pipeline import (  # noqa: E402
     PIPELINE_VERSION,
     DemoRadarAdapter,
@@ -59,6 +60,10 @@ class RadarPipelineTest(unittest.TestCase):
         self.assertEqual(sequence.status, "demo")
         self.assertEqual(sequence.stack().shape, (3, 8, 8))
         self.assertTrue(all(frame.status == "demo" for frame in sequence.frames))
+        self.assertEqual(
+            (sequence.timestamps[1] - sequence.timestamps[0]).total_seconds() / 60,
+            FORECAST_STEP_MINUTES,
+        )
 
     def test_sequence_rejects_non_observed_frames_for_operational_stack(self):
         frame = RadarFrame(
@@ -81,10 +86,10 @@ class RadarPipelineTest(unittest.TestCase):
 
         self.assertEqual(metadata["pipeline_version"], PIPELINE_VERSION)
         self.assertEqual(metadata["units"], "dBZ")
-        self.assertEqual(metadata["time_step_minutes"], 10)
+        self.assertEqual(metadata["time_step_minutes"], FORECAST_STEP_MINUTES)
         self.assertEqual(metadata["grid"]["width"], 256)
+        self.assertIn("15min", metadata["pipeline_version"])
 
 
 if __name__ == "__main__":
     unittest.main()
-
