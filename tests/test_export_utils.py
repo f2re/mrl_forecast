@@ -9,6 +9,7 @@ import xarray as xr
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
+from config import FORECAST_STEP_MINUTES, PRODUCT_NAME  # noqa: E402
 from export_utils import save_forecast_to_netcdf  # noqa: E402
 from radar_pipeline import PIPELINE_VERSION  # noqa: E402
 
@@ -29,12 +30,16 @@ class ExportUtilsTest(unittest.TestCase):
 
             with xr.open_dataset(output.name) as dataset:
                 self.assertIn("crs", dataset)
-                self.assertIn("lead_time", dataset.coords)
+                self.assertIn("lead_time_minutes", dataset.coords)
+                self.assertIn("valid_time_utc", dataset.coords)
+                self.assertEqual(dataset.attrs["product"], PRODUCT_NAME)
+                self.assertEqual(dataset.attrs["forecast_step_minutes"], FORECAST_STEP_MINUTES)
                 self.assertEqual(dataset.attrs["pipeline_version"], PIPELINE_VERSION)
                 self.assertEqual(dataset.attrs["model_id"], "fixture-model")
+                self.assertEqual(dataset.attrs["not_official_warning"], "true")
                 self.assertEqual(dataset["reflectivity"].attrs["grid_mapping"], "crs")
+                self.assertEqual(dataset["lead_time_minutes"].values.tolist(), [15, 30])
 
 
 if __name__ == "__main__":
     unittest.main()
-
