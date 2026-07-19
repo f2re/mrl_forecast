@@ -4,6 +4,7 @@ numpy<2.0
 flask
 xarray
 netCDF4
+h5py
 matplotlib
 pandas
 scipy
