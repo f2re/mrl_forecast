@@ -99,6 +99,42 @@ class DatasetPipelineTest(unittest.TestCase):
                 self.assertFalse(sequence["valid_mask"][:, 0, 0].any())
                 self.assertFalse(sequence["coverage_mask"][:, 0, 0].any())
 
+    def test_archive_uses_download_metadata_timestamp_for_arbitrary_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "archive"
+            output = root / "processed"
+            archive.mkdir()
+            for name in ("remote_a.h5", "remote_b.h5"):
+                (archive / name).write_bytes(b"fixture")
+            (archive / "metadata.json").write_text(
+                json.dumps(
+                    {
+                        "type": "raw_data",
+                        "source": "fmi-s3",
+                        "station": "ANJ",
+                        "status": "completed",
+                        "files": [
+                            {"filename": "remote_a.h5", "timestamp_utc": "2026-07-19T12:00:00+00:00"},
+                            {"filename": "remote_b.h5", "timestamp_utc": "2026-07-19T12:15:00+00:00"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            dataset_dir = process_archive_directory(
+                str(archive),
+                str(output),
+                sequence_length=2,
+                pipeline=_FixturePipeline(),
+            )
+            manifest = json.loads((Path(dataset_dir) / "manifest.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(manifest["frames"][0]["timestamp_utc"], "2026-07-19T12:00:00+00:00")
+            self.assertEqual(manifest["frames"][1]["timestamp_utc"], "2026-07-19T12:15:00+00:00")
+            self.assertEqual(manifest["frames"][0]["provenance"]["archive_source"], "fmi-s3")
+
     def test_temporal_split_leaves_gap_for_overlapping_windows(self):
         train_indices, validation_indices = temporal_split_indices(
             sample_count=20,
