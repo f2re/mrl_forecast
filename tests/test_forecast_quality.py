@@ -3,11 +3,13 @@ import sys
 import unittest
 
 import numpy as np
+from scipy.ndimage import shift
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from forecast_quality import (  # noqa: E402
     advection_forecast,
+    block_motion_forecast,
     is_uniform_forecast,
     persistence_forecast,
     threshold_metrics_by_lead_time,
@@ -35,18 +37,21 @@ class ForecastQualityTest(unittest.TestCase):
 
         self.assertFalse(is_uniform_forecast(forecast))
 
-    def test_threshold_metrics_report_csi_pod_and_far(self):
+    def test_threshold_metrics_report_extended_categorical_scores(self):
         target = np.array([[[0.0, 10.0], [10.0, 0.0]]])
         forecast = np.array([[[0.0, 10.0], [0.0, 10.0]]])
 
         metrics = threshold_metrics_by_lead_time(forecast, target, thresholds=(5.0,))
 
-        self.assertEqual(metrics["5.0"][0]["hits"], 1)
-        self.assertEqual(metrics["5.0"][0]["misses"], 1)
-        self.assertEqual(metrics["5.0"][0]["false_alarms"], 1)
-        self.assertAlmostEqual(metrics["5.0"][0]["csi"], 1 / 3)
-        self.assertAlmostEqual(metrics["5.0"][0]["pod"], 1 / 2)
-        self.assertAlmostEqual(metrics["5.0"][0]["far"], 1 / 2)
+        lead = metrics["5.0"][0]
+        self.assertEqual(lead["hits"], 1)
+        self.assertEqual(lead["misses"], 1)
+        self.assertEqual(lead["false_alarms"], 1)
+        self.assertAlmostEqual(lead["csi"], 1 / 3)
+        self.assertAlmostEqual(lead["pod"], 1 / 2)
+        self.assertAlmostEqual(lead["far"], 1 / 2)
+        self.assertAlmostEqual(lead["frequency_bias"], 1.0)
+        self.assertIsNotNone(lead["ets"])
 
     def test_advection_moves_last_frame_using_recent_motion(self):
         history = np.zeros((2, 9, 9), dtype=np.float32)
@@ -57,6 +62,23 @@ class ForecastQualityTest(unittest.TestCase):
 
         self.assertEqual(forecast[0, 4, 5], 10.0)
         self.assertEqual(forecast[1, 4, 6], 10.0)
+
+    def test_block_motion_improves_shifted_gradient_over_persistence(self):
+        yy, xx = np.mgrid[0:32, 0:32]
+        previous = (xx + 2 * yy).astype(np.float32)
+        current = shift(previous, (0, 1), order=1, mode="constant", cval=0.0)
+        expected = shift(current, (0, 1), order=1, mode="constant", cval=0.0)
+        history = np.stack([previous, current])
+
+        forecast = block_motion_forecast(
+            history,
+            output_steps=1,
+            downsample=1,
+            block_size=8,
+            search_radius=2,
+        )[0]
+
+        self.assertLess(np.mean((forecast - expected) ** 2), np.mean((current - expected) ** 2))
 
 
 if __name__ == "__main__":
