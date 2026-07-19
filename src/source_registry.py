@@ -50,6 +50,7 @@ def build_default_source_registry() -> RadarSourceRegistry:
     """Create the default registry while keeping optional sources isolated."""
 
     from adapters import DemoRadarAdapter, LocalDirectoryAdapter, NOAAAWSAdapter, NOAAFTPAdapter
+    from dwd_source import DWDOpenDataAdapter
     from open_sources import MeteoinfoVisualSource, RainViewerMetadataSource, Wis2RadarCatalog
     from radar_pipeline import RadarPipeline
 
@@ -81,6 +82,11 @@ def build_default_source_registry() -> RadarSourceRegistry:
             training_allowed=True,
             notes="Quantitative 1 km canonical adapter for new datasets.",
         ),
+    )
+    registry.register(
+        "dwd-open-data",
+        DWDOpenDataAdapter,
+        DWDOpenDataAdapter.CAPABILITIES,
     )
     registry.register(
         "noaa-ftp",
