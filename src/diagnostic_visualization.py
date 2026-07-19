@@ -1,4 +1,4 @@
-"""Render interpretable motion, growth, decay and uncertainty layers."""
+"""Render interpretable evolution and radar-quality layers."""
 
 from __future__ import annotations
 
@@ -80,6 +80,42 @@ def render_evolution_layers(
                 unit,
                 cmap,
                 maximum=common_max,
+            )
+            for index in range(min(len(values), len(lead_times_minutes)))
+        ]
+    return rendered
+
+
+def render_quality_layers(
+    quality_masks: Dict[str, np.ndarray],
+    lead_times_minutes: List[int],
+    range_km: float,
+) -> Dict[str, List[bytes]]:
+    """Render effective validity, coverage, clutter and interpolation confidence."""
+
+    specs = {
+        "valid_mask": ("Валидная область", "0/1", "Greens"),
+        "coverage_mask": ("Геометрическое покрытие", "0/1", "Greys"),
+        "clutter_mask": ("Исключённые помехи", "0/1", "Reds"),
+        "interpolation_weight": ("Вес интерполяции", "0…1", "cividis"),
+    }
+    rendered: Dict[str, List[bytes]] = {}
+    for layer_name, (title, unit, cmap) in specs.items():
+        if layer_name not in quality_masks:
+            continue
+        values = np.asarray(quality_masks[layer_name], dtype=np.float32)
+        if values.ndim == 2:
+            values = values[np.newaxis, ...]
+        if values.ndim != 3:
+            continue
+        rendered[layer_name] = [
+            _render_scalar(
+                values[index],
+                f"{title} · T+{lead_times_minutes[index]} мин",
+                range_km,
+                unit,
+                cmap,
+                maximum=1.0,
             )
             for index in range(min(len(values), len(lead_times_minutes)))
         ]
