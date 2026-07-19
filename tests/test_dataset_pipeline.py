@@ -29,19 +29,24 @@ class _FixturePipeline:
     def process_file(self, path, *, timestamp_utc, station, source):
         value = float(Path(path).name[-5]) if Path(path).name[-5].isdigit() else 1.0
         data = np.full((4, 4), value, dtype=np.float32)
+        coverage = np.ones((4, 4), dtype=bool)
+        coverage[0, 0] = False
         return RadarFrame(
             data=data,
             valid_mask=np.ones((4, 4), dtype=bool),
+            coverage_mask=coverage,
+            clutter_mask=np.zeros((4, 4), dtype=bool),
+            interpolation_weight=coverage.astype(np.float32),
             timestamp_utc=timestamp_utc,
             station=station,
             source=source,
-            qc={"pipeline_version": PIPELINE_VERSION, "valid_fraction": 1.0},
+            qc={"pipeline_version": PIPELINE_VERSION, "valid_fraction": 15 / 16},
             provenance={"path": path},
         )
 
 
 class DatasetPipelineTest(unittest.TestCase):
-    def test_archive_processing_saves_masked_sequence_and_manifest(self):
+    def test_archive_processing_saves_quality_sequence_and_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             archive = root / "archive"
@@ -73,17 +78,26 @@ class DatasetPipelineTest(unittest.TestCase):
             self.assertEqual(metadata["pipeline"]["time_step_minutes"], FORECAST_STEP_MINUTES)
             self.assertEqual(metadata["sample_format"], SAMPLE_FORMAT)
             self.assertEqual(metadata["sample_count"], 2)
+            self.assertIn("coverage_mask", metadata["quality_fields"])
             self.assertEqual(len(manifest["frames"]), 3)
             self.assertEqual(len(manifest["sequences"]), 2)
             self.assertIn("split_group", manifest["sequences"][0])
+            self.assertIn("quality", manifest["sequences"][0])
 
             sequence_path = Path(dataset_dir) / manifest["sequences"][0]["file"]
             self.assertEqual(sequence_path.suffix, ".npz")
             with np.load(sequence_path) as sequence:
-                self.assertIn("reflectivity", sequence)
-                self.assertIn("valid_mask", sequence)
-                self.assertEqual(sequence["reflectivity"].shape, (2, 4, 4))
-                self.assertTrue(np.all(sequence["valid_mask"]))
+                for name in (
+                    "reflectivity",
+                    "valid_mask",
+                    "coverage_mask",
+                    "clutter_mask",
+                    "interpolation_weight",
+                ):
+                    self.assertIn(name, sequence)
+                    self.assertEqual(sequence[name].shape, (2, 4, 4))
+                self.assertFalse(sequence["valid_mask"][:, 0, 0].any())
+                self.assertFalse(sequence["coverage_mask"][:, 0, 0].any())
 
     def test_temporal_split_leaves_gap_for_overlapping_windows(self):
         train_indices, validation_indices = temporal_split_indices(
