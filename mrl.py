@@ -57,11 +57,19 @@ def build_parser() -> argparse.ArgumentParser:
     sources.add_argument("--dataset-name", default="radar_volume_full_herwijnen")
     sources.add_argument("--dataset-version", default="1.0")
 
-    download = commands.add_parser("download", help="Скачать открытый радарный архив")
-    download.add_argument("--source", choices=("noaa", "dwd"), default="noaa")
-    download.add_argument("--station", required=True)
-    download.add_argument("--date", required=True)
+    download = commands.add_parser("download", help="Скачать радарный архив")
+    download.add_argument(
+        "--source",
+        choices=("noaa", "dwd", "fmi", "opera", "dmi", "knmi", "wis2"),
+        default="noaa",
+    )
+    download.add_argument("--station", default="")
+    download.add_argument("--date", default="")
     download.add_argument("--count", type=int, default=100)
+    download.add_argument("--prefix", default="")
+    download.add_argument("--collection", default="volume")
+    download.add_argument("--dataset-name", default="radar_volume_full_herwijnen")
+    download.add_argument("--dataset-version", default="1.0")
     download.add_argument("--output", default="data/raw/archive")
 
     prepare = commands.add_parser("prepare", help="Построить quality-aware dataset")
@@ -115,6 +123,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _required_download_args(args) -> None:
+    if args.source in {"noaa", "dwd"} and not args.station:
+        raise SystemExit(f"--station is required for source {args.source}")
+    if args.source in {"noaa", "dwd"} and not args.date:
+        raise SystemExit(f"--date is required for source {args.source}")
+
+
 def main() -> int:
     args = build_parser().parse_args()
 
@@ -150,13 +165,36 @@ def main() -> int:
         return _run("scripts/source_access.py", command)
 
     if args.command == "download":
-        script = "src/download_archive.py" if args.source == "noaa" else "src/download_dwd_archive.py"
+        _required_download_args(args)
+        if args.source in {"noaa", "dwd"}:
+            script = "src/download_archive.py" if args.source == "noaa" else "src/download_dwd_archive.py"
+            return _run(
+                script,
+                [
+                    "--station", args.station,
+                    "--date", args.date,
+                    "--count", args.count,
+                    "--output", args.output,
+                ],
+            )
+        source_ids = {
+            "fmi": "fmi-s3",
+            "opera": "opera-ord",
+            "dmi": "dmi-radar",
+            "knmi": "knmi-radar",
+            "wis2": "wis2-cache",
+        }
         return _run(
-            script,
+            "src/download_source_archive.py",
             [
+                "--source", source_ids[args.source],
                 "--station", args.station,
                 "--date", args.date,
                 "--count", args.count,
+                "--prefix", args.prefix,
+                "--collection", args.collection,
+                "--dataset-name", args.dataset_name,
+                "--dataset-version", args.dataset_version,
                 "--output", args.output,
             ],
         )
