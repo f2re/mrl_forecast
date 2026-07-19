@@ -1,8 +1,8 @@
-import os
-import numpy as np
-import xarray as xr
 import datetime
 from typing import Optional
+
+import numpy as np
+import xarray as xr
 
 from config import FORECAST_STEP_MINUTES, PRODUCT_NAME
 
@@ -12,7 +12,7 @@ def save_forecast_to_netcdf(
     base_time: datetime.datetime,
     station_id: str,
     output_path: str,
-    grid_resolution: float = 1953.125,  # 500000 / 256
+    grid_resolution: float = 1953.125,
     interval_minutes: int = FORECAST_STEP_MINUTES,
     station_lon: Optional[float] = None,
     station_lat: Optional[float] = None,
@@ -22,30 +22,31 @@ def save_forecast_to_netcdf(
     model_architecture: str = "unknown",
     quality_gate_status: str = "unknown",
 ):
-    """
-    Экспортирует экспериментальный прогноз отражаемости МРЛ [T, H, W] в NetCDF4.
+    """Export an experimental reflectivity forecast [T,H,W] to NetCDF4."""
 
-    Выходная величина — reflectivity в dBZ. Это не официальный прогноз осадков и
-    не предупреждение об опасных явлениях.
-    """
-    T, H, W = forecast_data.shape
+    values = np.asarray(forecast_data, dtype=np.float32)
+    if values.ndim != 3:
+        raise ValueError(f"forecast_data must have shape [T,H,W], got {values.shape}")
+    if grid_resolution <= 0 or interval_minutes <= 0:
+        raise ValueError("grid_resolution and interval_minutes must be positive")
 
+    time_count, height, width = values.shape
     if base_time.tzinfo is not None:
         base_time = base_time.astimezone(datetime.UTC).replace(tzinfo=None)
-    times = np.array(
-        [base_time + datetime.timedelta(minutes=interval_minutes * (i + 1)) for i in range(T)],
+    valid_times = np.array(
+        [base_time + datetime.timedelta(minutes=interval_minutes * (index + 1)) for index in range(time_count)],
         dtype="datetime64[ns]",
     )
-    lead_times = [interval_minutes * (i + 1) for i in range(T)]
+    lead_times = [interval_minutes * (index + 1) for index in range(time_count)]
 
-    x_coords = np.linspace(-250000, 250000, W)
-    y_coords = np.linspace(-250000, 250000, H)
+    x_coords = (np.arange(width, dtype=np.float64) - (width - 1) / 2.0) * grid_resolution
+    y_coords = (np.arange(height, dtype=np.float64) - (height - 1) / 2.0) * grid_resolution
 
-    ds = xr.Dataset(
+    dataset = xr.Dataset(
         data_vars={
             "reflectivity": (
                 ("valid_time_utc", "y", "x"),
-                forecast_data,
+                values,
                 {
                     "units": "dBZ",
                     "long_name": "Experimental radar reflectivity nowcast",
@@ -66,10 +67,10 @@ def save_forecast_to_netcdf(
             ),
         },
         coords={
-            "valid_time_utc": ("valid_time_utc", times, {"timezone": "UTC"}),
+            "valid_time_utc": ("valid_time_utc", valid_times, {"timezone": "UTC"}),
             "lead_time_minutes": ("valid_time_utc", lead_times, {"units": "minutes"}),
-            "y": y_coords,
-            "x": x_coords,
+            "y": ("y", y_coords, {"units": "m", "axis": "Y"}),
+            "x": ("x", x_coords, {"units": "m", "axis": "X"}),
         },
         attrs={
             "product": PRODUCT_NAME,
@@ -79,6 +80,7 @@ def save_forecast_to_netcdf(
             "base_time_utc": base_time.isoformat(),
             "institution": "MRL Forecast Pro",
             "forecast_step_minutes": interval_minutes,
+            "grid_resolution_m": float(grid_resolution),
             "pipeline_version": pipeline_version,
             "model_id": model_id,
             "model_architecture": model_architecture,
@@ -88,6 +90,5 @@ def save_forecast_to_netcdf(
             "reflectivity_only_no_nwp": "true",
         },
     )
-
-    ds.to_netcdf(output_path)
+    dataset.to_netcdf(output_path)
     return output_path
