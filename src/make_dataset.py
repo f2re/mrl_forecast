@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
-import os
 import pathlib
 import re
 from typing import Optional
@@ -16,16 +15,19 @@ from metadata_utils import load_metadata, save_metadata
 from radar_pipeline import RadarDecodeError, RadarPipeline, RadarPipelineConfig
 
 NEXRAD_TIMESTAMP = re.compile(r"^[A-Z0-9]{4}(\d{8})_(\d{6})")
+SAMPLE_FORMAT = "npz-reflectivity-mask-v1"
 
 
 def _timestamp_from_path(path: pathlib.Path) -> datetime.datetime:
     match = NEXRAD_TIMESTAMP.match(path.name.upper())
-    if match:
-        return datetime.datetime.strptime(
-            "".join(match.groups()),
-            "%Y%m%d%H%M%S",
-        ).replace(tzinfo=datetime.UTC)
-    return datetime.datetime.fromtimestamp(path.stat().st_mtime, datetime.UTC)
+    if not match:
+        raise RadarDecodeError(
+            f"Observation timestamp is not encoded in {path.name}; file mtime is not accepted"
+        )
+    return datetime.datetime.strptime(
+        "".join(match.groups()),
+        "%Y%m%d%H%M%S",
+    ).replace(tzinfo=datetime.UTC)
 
 
 def _pipeline_for_legacy_arguments(
@@ -65,6 +67,21 @@ def regular_frame_segments(frames, step_minutes: int, tolerance_minutes: int = 4
     return segments
 
 
+def _save_sequence(path: pathlib.Path, frames) -> None:
+    reflectivity = np.stack([frame.data for frame in frames], axis=0).astype(np.float32)
+    valid_mask = np.stack([frame.valid_mask for frame in frames], axis=0).astype(bool)
+    timestamps = np.asarray(
+        [frame.timestamp_utc.isoformat() for frame in frames],
+        dtype="U32",
+    )
+    np.savez_compressed(
+        path,
+        reflectivity=reflectivity,
+        valid_mask=valid_mask,
+        timestamps_utc=timestamps,
+    )
+
+
 def process_archive_directory(
     archive_dir,
     output_root,
@@ -73,7 +90,7 @@ def process_archive_directory(
     grid_limits=((0, 10000), (-250000.0, 250000.0), (-250000.0, 250000.0)),
     pipeline: Optional[RadarPipeline] = None,
 ):
-    """Grid observed radar files and save sequences plus provenance metadata."""
+    """Grid observed radar files and save masked sequences plus provenance metadata."""
     archive_path = pathlib.Path(archive_dir)
     files = sorted(
         path
@@ -102,6 +119,7 @@ def process_archive_directory(
         "source_type": source_meta.get("source", "aws"),
         "station": station,
         "sequence_length": sequence_length,
+        "sample_format": SAMPLE_FORMAT,
         "pipeline": radar_pipeline.metadata(),
         "status": "processing",
         "sample_count": 0,
@@ -152,15 +170,20 @@ def process_archive_directory(
             selected = segment[index : index + sequence_length]
             if any(frame.status != "observed" for frame in selected):
                 raise ValueError("Production datasets cannot contain non-observed frames")
-            filename = f"seq_{len(sequences):04d}.npy"
-            np.save(output_dir / filename, np.stack([frame.data for frame in selected], axis=0))
+            filename = f"seq_{len(sequences):04d}.npz"
+            _save_sequence(output_dir / filename, selected)
+            sequence_valid_fraction = float(
+                np.mean(np.stack([frame.valid_mask for frame in selected], axis=0))
+            )
             sequences.append(
                 {
                     "file": filename,
+                    "format": SAMPLE_FORMAT,
                     "segment": segment_index,
                     "frame_indices": [frame_indices[id(frame)] for frame in selected],
                     "start_time_utc": selected[0].timestamp_utc.isoformat(),
                     "end_time_utc": selected[-1].timestamp_utc.isoformat(),
+                    "valid_fraction": sequence_valid_fraction,
                 }
             )
     if not sequences:
@@ -171,6 +194,7 @@ def process_archive_directory(
 
     manifest = {
         "pipeline": radar_pipeline.metadata(),
+        "sample_format": SAMPLE_FORMAT,
         "station": station,
         "frames": frame_manifest,
         "sequences": sequences,
@@ -187,7 +211,7 @@ def process_archive_directory(
     metadata["regular_segment_count"] = len(segments)
     metadata["decode_error_count"] = len(errors)
     save_metadata(str(output_dir), metadata)
-    print(f"Saved {len(sequences)} sequences to {output_dir}")
+    print(f"Saved {len(sequences)} masked sequences to {output_dir}")
     return str(output_dir)
 
 
