@@ -16,19 +16,28 @@ from metadata_utils import load_metadata, save_metadata
 from radar_pipeline import RadarDecodeError, RadarPipeline, RadarPipelineConfig
 
 NEXRAD_TIMESTAMP = re.compile(r"^[A-Z0-9]{4}(\d{8})_(\d{6})")
+DWD_TIMESTAMP = re.compile(r"DBZH_00-(\d{12})", re.IGNORECASE)
 SAMPLE_FORMAT = "npz-reflectivity-mask-v1"
 
 
 def _timestamp_from_path(path: pathlib.Path) -> datetime.datetime:
-    match = NEXRAD_TIMESTAMP.match(path.name.upper())
-    if not match:
-        raise RadarDecodeError(
-            f"Observation timestamp is not encoded in {path.name}; file mtime is not accepted"
-        )
-    return datetime.datetime.strptime(
-        "".join(match.groups()),
-        "%Y%m%d%H%M%S",
-    ).replace(tzinfo=datetime.UTC)
+    nexrad_match = NEXRAD_TIMESTAMP.match(path.name.upper())
+    if nexrad_match:
+        return datetime.datetime.strptime(
+            "".join(nexrad_match.groups()),
+            "%Y%m%d%H%M%S",
+        ).replace(tzinfo=datetime.UTC)
+
+    dwd_match = DWD_TIMESTAMP.search(path.name)
+    if dwd_match:
+        return datetime.datetime.strptime(
+            dwd_match.group(1),
+            "%Y%m%d%H%M",
+        ).replace(tzinfo=datetime.UTC)
+
+    raise RadarDecodeError(
+        f"Observation timestamp is not encoded in {path.name}; file mtime is not accepted"
+    )
 
 
 def _pipeline_for_legacy_arguments(
@@ -43,6 +52,19 @@ def _pipeline_for_legacy_arguments(
             vertical_limit_m=grid_limits[0][1],
         )
     )
+
+
+def _source_pipeline(pipeline: RadarPipeline, source_type: str) -> RadarPipeline:
+    """Attach only the decoder required by the source; gridding stays shared."""
+
+    if source_type == "dwd-open-data":
+        from dwd_source import DWDOpenDataAdapter
+
+        return RadarPipeline(
+            config=pipeline.config,
+            radar_reader=DWDOpenDataAdapter._read_odim,
+        )
+    return pipeline
 
 
 def regular_frame_segments(frames, step_minutes: int, tolerance_minutes: int = 4):
@@ -119,6 +141,7 @@ def process_archive_directory(
     station = source_meta.get("station")
     if not station:
         raise ValueError("Raw archive metadata does not contain a station")
+    source_type = source_meta.get("source", "aws")
 
     if pipeline is not None:
         radar_pipeline = pipeline
@@ -128,13 +151,15 @@ def process_archive_directory(
         radar_pipeline = _pipeline_for_legacy_arguments(grid_shape, grid_limits)
     else:
         raise ValueError(f"Unknown grid profile: {grid_profile}")
+    radar_pipeline = _source_pipeline(radar_pipeline, source_type)
+
     dataset_id = f"dataset_{station}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     output_dir = pathlib.Path(output_root) / dataset_id
     output_dir.mkdir(parents=True, exist_ok=True)
     metadata = {
         "type": "dataset",
         "source_path": archive_dir,
-        "source_type": source_meta.get("source", "aws"),
+        "source_type": source_type,
         "station": station,
         "sequence_length": sequence_length,
         "sample_format": SAMPLE_FORMAT,
@@ -154,7 +179,7 @@ def process_archive_directory(
                 str(path),
                 timestamp_utc=_timestamp_from_path(path),
                 station=station,
-                source=metadata["source_type"],
+                source=source_type,
             )
             frames.append(frame)
             frame_manifest.append(
@@ -239,7 +264,7 @@ def process_archive_directory(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--archive-dir", required=True, help="Directory with raw NEXRAD Level II files")
+    parser.add_argument("--archive-dir", required=True, help="Directory with raw radar files")
     parser.add_argument("--output-dir", default="data/processed_archive")
     parser.add_argument("--seq-len", type=int, default=8)
     parser.add_argument("--grid-profile", choices=("canonical", "legacy"), default="canonical")
