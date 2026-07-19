@@ -23,4 +23,6 @@ jobs:
             bash -n "$file"
           done
       - name: Check dashboard JavaScript
-        run: node --check src/static/app.js
+        run: |
+          node --check src/static/app.js
+          node --check src/static/source-health.js
