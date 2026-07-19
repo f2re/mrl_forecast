@@ -2,98 +2,121 @@
 
 Цель проекта — экспериментальный краткосрочный прогноз поля радиолокационной отражаемости и зон радиоэха МРЛ. Результат не является официальным прогнозом интенсивности осадков или предупреждением об опасном явлении.
 
-Подробный практический план реализации: [`10-implementation-roadmap.md`](10-implementation-roadmap.md).
+Подробный практический план: [`10-implementation-roadmap.md`](10-implementation-roadmap.md).
 
 ## 1. Зафиксированные контракты
 
 | Контракт | Решение |
 | --- | --- |
 | Основной унифицированный растр | `512 x 512`, `1 км`, локальная AEQD, радиус около `256 км` |
-| Legacy pipeline | `radar-grid-v2-15min`, `256 x 256`, сохраняется для совместимости текущей ConvLSTM |
-| Новый формат последовательности | `.npz`: `reflectivity`, `valid_mask`, `timestamps_utc` |
-| Время наблюдения | только срок из данных/метаданных; `mtime` не считается штатным источником |
-| Основная история модели | не менее `60 минут` |
-| Российский целевой профиль | `6` входных и `6` выходных кадров с шагом `10 минут` после получения проверенных данных |
-| Основной горизонт первой новой модели | `0–60 минут` |
-| Физическая структура новой модели | перенос + рост + распад + неопределённость |
+| Legacy pipeline | `radar-grid-v2-15min`, `256 x 256`, сохраняется для контрольной ConvLSTM |
+| Canonical pipeline | `radar-grid-v3-1km` |
+| Формат последовательности | `.npz`: `reflectivity`, `valid_mask`, `timestamps_utc` |
+| Время наблюдения | только срок из данных/метаданных; `mtime` не считается сроком МРЛ |
+| История модели | не менее `60 минут` |
+| Российский целевой профиль | `6` входных и `6` выходных кадров с шагом `10 минут` после появления проверенных данных |
+| Основной горизонт первой рабочей модели | `0–60 минут` |
+| Физическая структура модели | перенос + рост + распад + неопределённость |
 
-## 2. Текущее состояние
+## 2. Реализованный рабочий срез
 
-| Блок | Статус | Комментарий |
+| Блок | Статус | Результат |
 | --- | --- | --- |
-| Граница доверия к данным | Частично закрыто | Есть наблюдаемые/demo-статусы, QC, provenance и декларация возможностей источников. |
-| Единый canonical contract | Реализован базовый слой | Добавлены `CanonicalGridSpec`, `CanonicalRadarFrame`, маски покрытия/помех и целевая сетка 512×512/1 км. |
-| Реестр источников | Реализован базовый слой | NOAA AWS разрешён для обучения; WIS2 — discovery; Meteoinfo и RainViewer — только визуальные источники. |
-| Датасет и manifest | Маски внедрены | Новые последовательности сохраняются в `.npz`; legacy `.npy` читается только для совместимости. |
-| Loss и verification | Маски внедрены | ConvLSTM baseline обучается и оценивается только по валидным пикселям. |
-| Временные метки | Усилено | Удалён штатный fallback на файловый `mtime` при подготовке архива. |
-| ConvLSTM baseline | Сохранён | Остаётся контрольной моделью; не считается целевой физически направляемой архитектурой. |
-| Сильный motion baseline | Не реализован | Требуется local block motion/optical flow. |
-| Эволюционная модель | Не реализована | Следует реализовать отдельные Motion/Growth/Decay/Uncertainty heads после стабилизации данных. |
-| Российские сырые ДМРЛ | Источник не подтверждён | Есть WIS2 discovery и визуальный контроль; обучение запрещено до проверки реального файла и единиц. |
-| Job runner и новый UI | Не реализованы | Веб-запуск тяжёлых операций остаётся отключённым до безопасного worker. |
+| Canonical data contract | Реализован | `CanonicalGridSpec`, `CanonicalRadarFrame`, маски валидности, покрытия, помех и интерполяции. |
+| Canonical Py-ART pipeline | Реализован | Новый профиль `512 x 512 / 1 км`; legacy-профиль сохранён. |
+| Реестр источников | Реализован базовый слой | NOAA AWS доступен в legacy/canonical вариантах; WIS2 — discovery; Meteoinfo/RainViewer — только визуальные источники. |
+| Датасет | Реализован | Masked `.npz`, timestamps, manifest, provenance, обратное чтение legacy `.npy`. |
+| Сроки наблюдений | Усилено | Удалён штатный fallback на файловый `mtime`; неподтверждённый срок отклоняется. |
+| Поиск ситуаций | Реализован базовый слой | `dry_valid`, `weak_echo`, `precipitation`, `convective`, `severe_core`, `invalid`. |
+| Балансировка | Реализована | Train sampler даёт 50% сухих и 50% echo-ситуаций; validation не балансируется. |
+| Masked loss/metrics | Реализованы | Невалидные пиксели исключаются из обучения и пороговых метрик. |
+| ConvLSTM | Сохранена | Контрольная baseline-модель. |
+| `MRL-PhysEvolution` | Реализована первая версия | Encoder + ConvGRU + Motion/Growth/Decay/Uncertainty heads + differentiable advection. |
+| Evolution loss | Реализован | Heavy-echo weighting, границы, адвекция, рост/распад, smooth flow и uncertainty. |
+| Shared model runtime | Реализован | Единая загрузка и инференс ConvLSTM/PhysEvolution с проверкой grid contract. |
+| Диагностические карты | Реализованы | Отражаемость, перенос, рост, распад и неопределённость по срокам. |
+| Job runner | Реализован | SQLite-очередь, один worker, журналы, отмена и восстановление статусов. |
+| CLI и UI | Реализован рабочий срез | Загрузка, подготовка и обучение запускаются из терминала или веб-интерфейса. |
+| Интерфейс | Переработан | Адаптивный UI в визуальном языке macOS/iOS, тёмная тема и мобильная навигация. |
+| NetCDF | Обновлён | Координаты строятся из фактической сетки и разрешения модели. |
 
-## 3. Приоритеты
+## 3. Что ещё не закрыто
 
-| Приоритет | Документ/этап | Результат | Статус |
-| --- | --- | --- | --- |
-| P0 | [02-unified-radar-pipeline.md](02-unified-radar-pipeline.md) | Маски в dataset/loss/metrics, разделение `нет эха` и `нет данных` | Базовый срез реализован |
-| P0 | [10-implementation-roadmap.md](10-implementation-roadmap.md) / P1 | Открытые источники, адаптеры и каталог | В работе |
-| P0 | [03-geospatial-rendering.md](03-geospatial-rendering.md) | Единое гридирование BUFR/NEXRAD и canonical frame для визуализации | Следующий технический этап |
-| P1 | [05-dataset-quality.md](05-dataset-quality.md) | Поиск событий, классы, балансировка train, event-based split | К выполнению |
-| P1 | [04-aws-ingestion.md](04-aws-ingestion.md) | Persistence, global shift, block motion/optical flow | К выполнению |
-| P1 | [06-model-training.md](06-model-training.md) | `MRL-PhysEvolution`: motion + growth + decay + uncertainty | После data/baseline этапов |
-| P1 | [07-registry-ui-observability.md](07-registry-ui-observability.md) | Реестр, model cards, новый адаптивный UI | Частично реализовано |
-| P2 | [08-export-testing-operations.md](08-export-testing-operations.md) | Job runner, CLI, NetCDF, CPU hardening | Частично реализовано |
-| P2 | [09-russian-dmrl-track.md](09-russian-dmrl-track.md) | Проверенный открытый российский quantitative source | Ожидает источник/fixtures |
+1. Нет сформированного крупного canonical-архива для обучения и независимой оценки.
+2. Текущий advection baseline остаётся глобальным integer shift; нужен local block-motion/optical flow.
+3. Split защищён временным разрывом между скользящими окнами, но ещё не является полноценным event-based holdout.
+4. Нет отдельного DWD/ODIM HDF5 quantitative adapter.
+5. Нет проверенного открытого долговременного источника сырых российских ДМРЛ-BUFR.
+6. BUFR-путь нельзя допускать к обучению без реальных российских fixtures, проверки дескрипторов, единиц и геометрии.
+7. `MRL-PhysEvolution` реализована программно, но ещё должна быть обучена на репрезентативном архиве и пройти scientific quality gate.
+8. Не выполнены ONNX export, CPU p50/p95 benchmark и проверка INT8-квантизации.
+9. Не подготовлен полный эксплуатационный и нормативный комплект для использования вне исследовательского режима.
 
 ## 4. Целевая модель
 
-Рабочее имя: `MRL-PhysEvolution`.
-
 ```text
-reflectivity + valid_mask + range/beam features
-                    |
-                    v
-           lightweight encoder
-                    |
-                    v
-                ConvGRU
-          /          |          \
-    MotionHead   GrowthHead   DecayHead
-          \          |          /
-       differentiable advection + bounded evolution
-                    |
-                    v
-         forecast + uncertainty
+reflectivity + valid_mask + range
+                 |
+                 v
+      lightweight frame encoder
+                 |
+                 v
+             ConvGRU
+       /          |          \
+ MotionHead   GrowthHead   DecayHead
+       \          |          /
+ differentiable advection + bounded evolution
+                 |
+                 v
+     reflectivity + uncertainty
 ```
 
-Физические штрафы рассчитываются на линейном или монотонном proxy отражаемости, а не напрямую на логарифмической шкале `dBZ`. Рост и распад не должны называться сохранением массы воды: отражаемость не эквивалентна массе осадков.
+Модель разделяет горизонтальный перенос и локальную эволюцию радиоэха. Регуляризация считается на монотонном proxy линейной отражаемости, а не непосредственно на `dBZ`. Это physics-guided nowcasting model, а не полная атмосферная PINN и не модель сохранения массы воды.
 
-## 5. Общий Definition of Done
+## 5. Правила публикации модели
 
-Версия готова к демонстрационной эксплуатации, если:
+Модель получает статус, пригодный для выбора в интерфейсе, только если:
 
-1. Исходный файл и полный provenance сохраняются.
-2. `нет эха`, `нет данных`, покрытие и помехи не смешиваются.
-3. Маски используются в датасете, loss и всех пиксельных метриках.
-4. Временные метки берутся из наблюдения, а не из `mtime`.
-5. Все количественные источники проходят проверку единиц, геометрии и покрытия.
-6. Визуальные GIF/тайлы не используются для обучения как `dBZ`.
-7. Train балансируется по классам, validation/test сохраняют естественное распределение.
-8. Split выполняется по событиям/временным блокам без temporal leakage.
-9. Есть persistence и local motion/optical-flow baselines.
-10. Модель отдельно выдаёт перенос, рост, распад и неопределённость.
-11. Модель не публикуется, если не превосходит baseline на целевых сроках и порогах.
-12. Обучение воспроизводимо запускается из CLI и интерфейса через один job runner.
-13. Инференс проходит CPU benchmark по задержке и памяти.
-14. UI и экспорт везде маркируют продукт как экспериментальный прогноз отражаемости.
+1. checkpoint соответствует pipeline, grid и временному шагу датасета;
+2. validation не содержит невалидных пикселей в loss/metrics;
+3. нет uniform-field anomaly;
+4. модель превосходит persistence и текущий advection baseline по masked MSE;
+5. после внедрения optical flow quality gate будет расширен на него;
+6. сроки более 60 минут маркируются как пониженная экспериментальная достоверность.
 
 ## 6. Следующий рабочий срез
 
-1. Перевести NOAA AWS output в `CanonicalRadarFrame` без потери масок и provenance.
-2. Добавить простой SQLite-каталог сроков, станций и QC.
-3. Реализовать классификацию `dry_valid / weak_echo / precipitation / convective / severe_core`.
-4. Добавить balanced train sampler и event-based split.
-5. Реализовать local block-motion/optical-flow baseline.
-6. После этого начать `MRL-PhysEvolution` на горизонте 60 минут.
+### P0 — данные и baseline
+
+1. Собрать multi-day canonical datasets для нескольких NEXRAD-станций.
+2. Реализовать local block-motion/optical-flow baseline.
+3. Перевести split на event/date-block holdout и выделить неизменяемый test set.
+4. Добавить отчёт FSS, frequency bias, area bias и max-dBZ error по lead time.
+
+### P1 — открытые источники
+
+1. Добавить DWD Open Data/ODIM HDF5 quantitative adapter.
+2. Продолжать автоматический поиск российских радарных наборов через WIS2.
+3. При появлении реального ДМРЛ-BUFR fixture реализовать отдельный подтверждённый decoder profile.
+4. Не использовать Meteoinfo/RainViewer как количественный `dBZ`.
+
+### P1 — обучение и CPU
+
+1. Обучить `MRL-PhysEvolution` сначала на горизонте 60 минут.
+2. Сравнить с persistence, global shift и optical flow по классам событий.
+3. Выполнить ONNX export и CPU benchmark.
+4. После проверки качества рассмотреть динамическую/статическую квантизацию.
+
+## 7. Definition of Done демонстрационного релиза
+
+1. Исходный файл и provenance воспроизводимо сохраняются.
+2. `нет эха`, `нет данных`, покрытие и помехи не смешиваются.
+3. Маски проходят через dataset, loss, metrics и runtime.
+4. Train балансируется, validation/test сохраняют естественное распределение.
+5. Есть независимый event-based test set.
+6. Есть persistence, optical-flow baseline и PhysEvolution comparison.
+7. Модель отдельно выдаёт перенос, рост, распад и неопределённость.
+8. Обучение одинаково запускается из CLI и UI через один job runner.
+9. Инференс проходит зафиксированный CPU benchmark.
+10. Российский источник не получает `training_allowed` без подтверждённого количественного файла.
+11. UI и экспорт маркируют продукт как экспериментальный прогноз отражаемости.
