@@ -99,6 +99,7 @@ def process_archive_directory(
     grid_shape=(1, 256, 256),
     grid_limits=((0, 10000), (-250000.0, 250000.0), (-250000.0, 250000.0)),
     pipeline: Optional[RadarPipeline] = None,
+    grid_profile: str = "canonical",
 ):
     """Grid observed radar files and save masked sequences plus provenance metadata."""
     archive_path = pathlib.Path(archive_dir)
@@ -119,7 +120,14 @@ def process_archive_directory(
     if not station:
         raise ValueError("Raw archive metadata does not contain a station")
 
-    radar_pipeline = pipeline or _pipeline_for_legacy_arguments(grid_shape, grid_limits)
+    if pipeline is not None:
+        radar_pipeline = pipeline
+    elif grid_profile == "canonical":
+        radar_pipeline = RadarPipeline.canonical()
+    elif grid_profile == "legacy":
+        radar_pipeline = _pipeline_for_legacy_arguments(grid_shape, grid_limits)
+    else:
+        raise ValueError(f"Unknown grid profile: {grid_profile}")
     dataset_id = f"dataset_{station}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     output_dir = pathlib.Path(output_root) / dataset_id
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -130,6 +138,7 @@ def process_archive_directory(
         "station": station,
         "sequence_length": sequence_length,
         "sample_format": SAMPLE_FORMAT,
+        "grid_profile": grid_profile,
         "pipeline": radar_pipeline.metadata(),
         "status": "processing",
         "sample_count": 0,
@@ -233,5 +242,11 @@ if __name__ == "__main__":
     parser.add_argument("--archive-dir", required=True, help="Directory with raw NEXRAD Level II files")
     parser.add_argument("--output-dir", default="data/processed_archive")
     parser.add_argument("--seq-len", type=int, default=8)
+    parser.add_argument("--grid-profile", choices=("canonical", "legacy"), default="canonical")
     args = parser.parse_args()
-    process_archive_directory(args.archive_dir, args.output_dir, args.seq_len)
+    process_archive_directory(
+        args.archive_dir,
+        args.output_dir,
+        args.seq_len,
+        grid_profile=args.grid_profile,
+    )
