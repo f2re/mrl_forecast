@@ -45,7 +45,7 @@ DEFAULT_CANONICAL_GRID = CanonicalGridSpec()
 
 @dataclass(frozen=True)
 class RadarSourceCapabilities:
-    """Declare what a source can safely be used for."""
+    """Declare data semantics, access method and adapter readiness."""
 
     source_id: str
     native_format: str
@@ -54,10 +54,34 @@ class RadarSourceCapabilities:
     visualization_allowed: bool = True
     raw_polar_volume: bool = False
     notes: str = ""
+    access_mode: str = "open"
+    credential_env: str = ""
+    registration_url: str = ""
+    registration_steps: tuple[str, ...] = ()
+    probe_supported: bool = False
+    download_supported: bool = False
+    adapter_status: str = "active"
+    license_id: str = ""
+    archive_note: str = ""
 
     def __post_init__(self) -> None:
         if self.training_allowed and not self.quantitative_reflectivity:
             raise ValueError("A training source must provide quantitative reflectivity")
+        if self.access_mode not in {
+            "open",
+            "open_optional_key",
+            "api_key_required",
+            "account_required",
+            "request_required",
+            "discovery_only",
+        }:
+            raise ValueError(f"Unsupported source access mode: {self.access_mode}")
+        if self.adapter_status not in {"active", "probe_only", "manual", "planned"}:
+            raise ValueError(f"Unsupported adapter status: {self.adapter_status}")
+
+    @property
+    def credential_required(self) -> bool:
+        return self.access_mode in {"api_key_required", "account_required"}
 
     def to_metadata(self) -> Dict[str, Any]:
         return {
@@ -68,6 +92,16 @@ class RadarSourceCapabilities:
             "visualization_allowed": self.visualization_allowed,
             "raw_polar_volume": self.raw_polar_volume,
             "notes": self.notes,
+            "access_mode": self.access_mode,
+            "credential_env": self.credential_env,
+            "credential_required": self.credential_required,
+            "registration_url": self.registration_url,
+            "registration_steps": list(self.registration_steps),
+            "probe_supported": self.probe_supported,
+            "download_supported": self.download_supported,
+            "adapter_status": self.adapter_status,
+            "license_id": self.license_id,
+            "archive_note": self.archive_note,
         }
 
 
