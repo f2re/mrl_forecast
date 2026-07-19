@@ -1,110 +1,173 @@
 #!/usr/bin/env python3
-import os
-import sys
+"""Run registered radar models from the terminal using the shared runtime."""
+
+from __future__ import annotations
+
 import argparse
+import json
+import os
+import pathlib
+import sys
+from typing import Any, Dict
+
 import numpy as np
 import torch
-import pathlib
 
-# Добавляем src в путь
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
 
-# Force AWS region for NEXRAD data
-os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'
+from adapters import DemoRadarAdapter, LocalDirectoryAdapter, NOAAAWSAdapter  # noqa: E402
+from config import MAX_DBZ  # noqa: E402
+from diagnostic_visualization import render_evolution_layers  # noqa: E402
+from forecast_quality import summarize_forecast  # noqa: E402
+from map_visualization import generate_sequence_plots  # noqa: E402
+from model_runtime import ModelRuntime  # noqa: E402
 
-from train_nowcasting_model import ConvLSTM
-from adapters import DemoRadarAdapter, NOAAAWSAdapter, LocalDirectoryAdapter
-from forecast_quality import summarize_forecast
-from map_visualization import generate_sequence_plots
 
-def main():
-    parser = argparse.ArgumentParser(description="CLI для генерации MRL прогнозов (Nowcasting).")
-    parser.add_argument('--model-path', type=str, required=True, help="Путь к файлу модели (например, best_model.pt)")
-    parser.add_argument('--station', type=str, default='kokx', help="Код станции (например, kokx)")
-    parser.add_argument('--source', type=str, choices=['aws', 'local', 'demo'], default='aws', help="Источник данных")
-    parser.add_argument('--local-dir', type=str, default='data/processed', help="Папка для source=local")
-    parser.add_argument('--output-dir', type=str, default='data/predictions', help="Папка для сохранения результатов")
+def _checkpoint_path(value: str) -> pathlib.Path:
+    path = pathlib.Path(value)
+    if path.is_dir():
+        path = path / "best_model.pt"
+    if not path.exists():
+        raise FileNotFoundError(f"Модель не найдена: {path}")
+    return path
+
+
+def _source_sequence(runtime: ModelRuntime, args):
+    grid_shape = runtime.expected_grid_shape() or (256, 256)
+    pipeline = runtime.pipeline()
+    if args.source == "aws":
+        adapter = NOAAAWSAdapter(grid_size=grid_shape, pipeline=pipeline)
+        return adapter.get_latest_sequence(runtime.input_length, station_code=args.station)
+    if args.source == "local":
+        adapter = LocalDirectoryAdapter(args.local_dir, grid_size=grid_shape, pipeline=pipeline)
+        return adapter.get_latest_sequence(runtime.input_length)
+    return DemoRadarAdapter(grid_size=grid_shape).get_latest_sequence(runtime.input_length)
+
+
+def _evolution_summary(diagnostics: Dict[str, np.ndarray]) -> Dict[str, float]:
+    result: Dict[str, float] = {}
+    motion = diagnostics.get("motion")
+    if motion is not None:
+        result["mean_motion_pixels"] = float(
+            np.mean(np.sqrt(motion[:, 0] ** 2 + motion[:, 1] ** 2))
+        )
+    for name in ("growth", "decay", "uncertainty"):
+        if name in diagnostics:
+            result[f"mean_{name}"] = float(np.mean(diagnostics[name]))
+    return result
+
+
+def _save_pngs(
+    output_dir: pathlib.Path,
+    station: str,
+    history: np.ndarray,
+    forecast: np.ndarray,
+    timestamps,
+    runtime: ModelRuntime,
+    diagnostics: Dict[str, np.ndarray],
+) -> None:
+    range_km = float(runtime.grid.get("radius_km", 250.0))
+    images = generate_sequence_plots(
+        history,
+        forecast,
+        runtime.input_length,
+        station_code=station,
+        start_datetime=timestamps[-1],
+        history_timestamps=timestamps,
+        interval_minutes=runtime.forecast_step_minutes,
+        max_range_km=range_km,
+    )
+    for index, image in enumerate(images):
+        if index < runtime.input_length:
+            name = f"{station}_history_{index:02d}.png"
+        else:
+            name = f"{station}_forecast_{index - runtime.input_length + 1:02d}.png"
+        (output_dir / name).write_bytes(image)
+
+    lead_times = [runtime.forecast_step_minutes * (index + 1) for index in range(runtime.target_length)]
+    for layer, layer_images in render_evolution_layers(diagnostics, lead_times, range_km).items():
+        for index, image in enumerate(layer_images):
+            (output_dir / f"{station}_{layer}_{lead_times[index]:03d}min.png").write_bytes(image)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Экспериментальный прогноз радиоэха МРЛ")
+    parser.add_argument("--model-path", required=True, help="best_model.pt или каталог модели")
+    parser.add_argument("--station", default="kokx", help="Код радиолокатора")
+    parser.add_argument("--source", choices=("aws", "local", "demo"), default="aws")
+    parser.add_argument("--local-dir", default="data/processed", help="Каталог для source=local")
+    parser.add_argument("--output-dir", default="data/predictions")
     args = parser.parse_args()
 
-    os.makedirs(args.output_dir, exist_ok=True)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    output_dir = pathlib.Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    runtime = ModelRuntime(device)
+    model_info = runtime.load(str(_checkpoint_path(args.model_path)))
 
-    model_path = args.model_path
-    if os.path.isdir(model_path):
-        candidate = os.path.join(model_path, 'best_model.pt')
-        if os.path.exists(candidate):
-            model_path = candidate
-        else:
-            print(f"Ошибка: В директории {model_path} не найден файл best_model.pt")
-            sys.exit(1)
-
-    print(f"Загрузка модели из {model_path}...")
-    checkpoint = torch.load(model_path, map_location=device)
-    hyperparameters = checkpoint.get('hyperparameters', {})
-    input_length = checkpoint.get('input_length', hyperparameters.get('input_length', 4))
-    target_length = checkpoint.get('target_length', hyperparameters.get('target_length', 4))
-    
-    model = ConvLSTM(
-        input_channels=1, 
-        hidden_channels=checkpoint.get('hidden_channels', [32, 1]), 
-        output_steps=target_length
+    print(
+        f"Модель: {model_info['model_id']} · {runtime.architecture} · "
+        f"{runtime.forecast_step_minutes} мин · {device}"
     )
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.to(device)
-    model.eval()
+    sequence = _source_sequence(runtime, args)
+    values = sequence.stack(require_observed=sequence.status == "observed")
+    masks = np.stack([frame.valid_mask for frame in sequence.frames], axis=0)
+    timestamps = sequence.timestamps[-runtime.input_length:]
+    print(f"Источник: {sequence.message}")
 
-    print(f"Загрузка последних данных ({input_length} кадров) для {args.station}...")
-    if args.source == 'aws':
-        adapter = NOAAAWSAdapter()
-        array, timestamps, msg = adapter.get_latest_sequence(input_length, station_code=args.station)
-    elif args.source == 'local':
-        adapter = LocalDirectoryAdapter(args.local_dir)
-        array, timestamps, msg = adapter.get_latest_sequence(input_length)
-    else:
-        adapter = DemoRadarAdapter()
-        array, timestamps, msg = adapter.get_latest_sequence(input_length)
-    
-    print(f"Статус данных: {msg}")
+    result = runtime.predict(values, masks)
+    history = result["input"]
+    forecast = result["forecast"]
+    diagnostics = result["diagnostics"]
+    quality = summarize_forecast(forecast * MAX_DBZ)
+    if quality["uniform_field_anomaly"]:
+        print(f"Прогноз отклонён quality gate: {quality}")
+        return 2
 
-    # Предобработка
-    array = np.clip(array, 0.0, 70.0) / 70.0
-    tensor_input = torch.from_numpy(array).unsqueeze(1).unsqueeze(0).float().to(device)
-
-    print("Генерация прогноза...")
-    with torch.no_grad():
-        preds, _ = model(tensor_input)
-
-    in_data = tensor_input.cpu().squeeze(0).squeeze(1).numpy()
-    pred_data = preds.cpu().squeeze(0).squeeze(1).numpy()
-    diagnostics = summarize_forecast(pred_data * 70.0)
-    if diagnostics['uniform_field_anomaly']:
-        print(f"Ошибка: прогноз отклонен quality gate: {diagnostics}")
-        sys.exit(2)
-
-    # Сохранение сырых массивов
-    np.save(os.path.join(args.output_dir, f'history_{args.station}.npy'), in_data)
-    np.save(os.path.join(args.output_dir, f'forecast_{args.station}.npy'), pred_data)
-    print("Тензоры сохранены в формате .npy")
-
-    # Визуализация с картографической основой
-    print("Рендеринг карт (с геопривязкой)...")
-    last_ts = timestamps[-1] if timestamps else None
-    png_list = generate_sequence_plots(
-        in_data, pred_data, input_length, 
-        station_code=args.station,
-        start_datetime=last_ts,
-        history_timestamps=timestamps
+    lead_times = np.asarray(
+        [runtime.forecast_step_minutes * (index + 1) for index in range(runtime.target_length)],
+        dtype=np.int16,
     )
-    
-    for i, png_bytes in enumerate(png_list):
-        is_forecast = i >= input_length
-        prefix = "forecast" if is_forecast else "history"
-        idx = i - input_length if is_forecast else i
-        filename = os.path.join(args.output_dir, f"{args.station}_{prefix}_{idx}.png")
-        with open(filename, 'wb') as f:
-            f.write(png_bytes)
-            
-    print(f"Готово! Результаты сохранены в {args.output_dir}")
+    arrays: Dict[str, Any] = {
+        "history_dbz": history * MAX_DBZ,
+        "history_valid_mask": result["input_mask"],
+        "forecast_dbz": forecast * MAX_DBZ,
+        "history_timestamps_utc": np.asarray([value.isoformat() for value in timestamps], dtype="U32"),
+        "lead_times_minutes": lead_times,
+    }
+    for name, value in diagnostics.items():
+        if isinstance(value, np.ndarray):
+            arrays[name] = value
+    np.savez_compressed(output_dir / f"{args.station}_forecast.npz", **arrays)
 
-if __name__ == '__main__':
-    main()
+    _save_pngs(
+        output_dir,
+        args.station.lower(),
+        history,
+        forecast,
+        timestamps,
+        runtime,
+        diagnostics,
+    )
+    report = {
+        "product": "experimental_radar_reflectivity_nowcast",
+        "not_official_warning": True,
+        "source": args.source,
+        "station": args.station.upper(),
+        "base_time_utc": timestamps[-1].isoformat(),
+        "lead_times_minutes": lead_times.tolist(),
+        "model": model_info,
+        "forecast_diagnostics": quality,
+        "evolution_diagnostics": _evolution_summary(diagnostics),
+    }
+    (output_dir / f"{args.station}_forecast.json").write_text(
+        json.dumps(report, indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
+    print(f"Результаты сохранены: {output_dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
