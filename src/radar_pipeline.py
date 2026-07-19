@@ -53,6 +53,8 @@ class RadarPipelineConfig:
     def __post_init__(self) -> None:
         if self.width <= 0 or self.height <= 0 or self.radius_km <= 0:
             raise ValueError("Radar grid dimensions and radius must be positive")
+        if self.time_step_minutes <= 0:
+            raise ValueError("Radar time step must be positive")
 
     @classmethod
     def canonical(cls, time_step_minutes: int = FORECAST_STEP_MINUTES) -> "RadarPipelineConfig":
@@ -388,15 +390,22 @@ class RadarPipeline:
 class DemoRadarAdapter:
     """Generate explicit synthetic demo frames, never operational observations."""
 
-    def __init__(self, grid_size: tuple[int, int] = (256, 256)):
+    def __init__(
+        self,
+        grid_size: tuple[int, int] = (256, 256),
+        time_step_minutes: int = FORECAST_STEP_MINUTES,
+    ):
+        if time_step_minutes <= 0:
+            raise ValueError("Demo radar time step must be positive")
         self.grid_size = grid_size
+        self.time_step_minutes = int(time_step_minutes)
 
     def get_latest_sequence(self, seq_length: int) -> RadarSequence:
         now = datetime.datetime.now(datetime.UTC)
         frames = []
         for index in range(seq_length):
             timestamp = now - datetime.timedelta(
-                minutes=(seq_length - index - 1) * FORECAST_STEP_MINUTES
+                minutes=(seq_length - index - 1) * self.time_step_minutes
             )
             frames.append(
                 RadarFrame(
@@ -407,7 +416,11 @@ class DemoRadarAdapter:
                     station="DEMO",
                     source="demo",
                     status="demo",
-                    qc={"pipeline_version": PIPELINE_VERSION, "demo": True},
+                    qc={
+                        "pipeline_version": PIPELINE_VERSION,
+                        "time_step_minutes": self.time_step_minutes,
+                        "demo": True,
+                    },
                 )
             )
         return RadarSequence(
