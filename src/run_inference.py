@@ -18,7 +18,7 @@ os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
 
 from adapters import DemoRadarAdapter, LocalDirectoryAdapter, NOAAAWSAdapter  # noqa: E402
 from config import MAX_DBZ  # noqa: E402
-from diagnostic_visualization import render_evolution_layers  # noqa: E402
+from diagnostic_visualization import render_evolution_layers, render_quality_layers  # noqa: E402
 from forecast_quality import summarize_forecast  # noqa: E402
 from map_visualization import generate_sequence_plots  # noqa: E402
 from model_runtime import ModelRuntime  # noqa: E402
@@ -58,6 +58,21 @@ def _evolution_summary(diagnostics: Dict[str, np.ndarray]) -> Dict[str, float]:
     return result
 
 
+def _quality_summary(quality: Dict[str, np.ndarray]) -> Dict[str, float]:
+    valid = np.asarray(quality["valid_mask"], dtype=bool)
+    coverage = np.asarray(quality["coverage_mask"], dtype=bool)
+    clutter = np.asarray(quality["clutter_mask"], dtype=bool)
+    weights = np.asarray(quality["interpolation_weight"], dtype=np.float32)
+    return {
+        "valid_fraction": float(valid.mean()),
+        "coverage_fraction": float(coverage.mean()),
+        "clutter_fraction": float(clutter.mean()),
+        "mean_interpolation_weight": (
+            float(weights[coverage].mean()) if np.any(coverage) else 0.0
+        ),
+    }
+
+
 def _save_pngs(
     output_dir: pathlib.Path,
     station: str,
@@ -66,6 +81,7 @@ def _save_pngs(
     timestamps,
     runtime: ModelRuntime,
     diagnostics: Dict[str, np.ndarray],
+    forecast_quality: Dict[str, np.ndarray],
 ) -> None:
     range_km = float(runtime.grid.get("radius_km", 250.0))
     images = generate_sequence_plots(
@@ -86,7 +102,9 @@ def _save_pngs(
         (output_dir / name).write_bytes(image)
 
     lead_times = [runtime.forecast_step_minutes * (index + 1) for index in range(runtime.target_length)]
-    for layer, layer_images in render_evolution_layers(diagnostics, lead_times, range_km).items():
+    rendered = render_evolution_layers(diagnostics, lead_times, range_km)
+    rendered.update(render_quality_layers(forecast_quality, lead_times, range_km))
+    for layer, layer_images in rendered.items():
         for index, image in enumerate(layer_images):
             (output_dir / f"{station}_{layer}_{lead_times[index]:03d}min.png").write_bytes(image)
 
@@ -112,17 +130,24 @@ def main() -> int:
     )
     sequence = _source_sequence(runtime, args)
     values = sequence.stack(require_observed=sequence.status == "observed")
-    masks = np.stack([frame.valid_mask for frame in sequence.frames], axis=0)
+    quality = sequence.quality_arrays()
     timestamps = sequence.timestamps[-runtime.input_length:]
     print(f"Источник: {sequence.message}")
 
-    result = runtime.predict(values, masks)
+    result = runtime.predict(
+        values,
+        valid_mask=quality["valid_mask"],
+        coverage_mask=quality["coverage_mask"],
+        clutter_mask=quality["clutter_mask"],
+        interpolation_weight=quality["interpolation_weight"],
+    )
     history = result["input"]
     forecast = result["forecast"]
     diagnostics = result["diagnostics"]
-    quality = summarize_forecast(forecast * MAX_DBZ)
-    if quality["uniform_field_anomaly"]:
-        print(f"Прогноз отклонён quality gate: {quality}")
+    forecast_quality = result["forecast_quality_masks"]
+    forecast_diagnostics = summarize_forecast(forecast * MAX_DBZ)
+    if forecast_diagnostics["uniform_field_anomaly"]:
+        print(f"Прогноз отклонён quality gate: {forecast_diagnostics}")
         return 2
 
     lead_times = np.asarray(
@@ -131,11 +156,14 @@ def main() -> int:
     )
     arrays: Dict[str, Any] = {
         "history_dbz": history * MAX_DBZ,
-        "history_valid_mask": result["input_mask"],
         "forecast_dbz": forecast * MAX_DBZ,
         "history_timestamps_utc": np.asarray([value.isoformat() for value in timestamps], dtype="U32"),
         "lead_times_minutes": lead_times,
     }
+    for name, value in result["quality_masks"].items():
+        arrays[f"history_{name}"] = value
+    for name, value in forecast_quality.items():
+        arrays[f"forecast_{name}"] = value
     for name, value in diagnostics.items():
         if isinstance(value, np.ndarray):
             arrays[name] = value
@@ -149,6 +177,7 @@ def main() -> int:
         timestamps,
         runtime,
         diagnostics,
+        forecast_quality,
     )
     report = {
         "product": "experimental_radar_reflectivity_nowcast",
@@ -158,7 +187,8 @@ def main() -> int:
         "base_time_utc": timestamps[-1].isoformat(),
         "lead_times_minutes": lead_times.tolist(),
         "model": model_info,
-        "forecast_diagnostics": quality,
+        "forecast_diagnostics": forecast_diagnostics,
+        "quality_diagnostics": _quality_summary(forecast_quality),
         "evolution_diagnostics": _evolution_summary(diagnostics),
     }
     (output_dir / f"{args.station}_forecast.json").write_text(
