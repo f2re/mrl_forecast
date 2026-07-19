@@ -7,13 +7,14 @@ import pathlib
 import re
 import tempfile
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urljoin
 
 import requests
 
 from radar_contract import RadarSourceCapabilities
 from radar_pipeline import RadarDecodeError, RadarPipeline, RadarSequence, RadarSourceError
+from source_access import RemoteRadarFile, SourceProbeResult, download_http, verify_http_download
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,11 @@ class DWDOpenDataAdapter:
         visualization_allowed=True,
         raw_polar_volume=False,
         notes="Open quantitative DBZH sweep; polarimetric quality-filtered product.",
+        access_mode="open",
+        probe_supported=True,
+        download_supported=True,
+        adapter_status="active",
+        archive_note="Station directories expose recent ODIM HDF5 sweeps over direct HTTP.",
     )
     TIMESTAMP_PATTERN = re.compile(r"dbzh_00-(\d{12})", re.IGNORECASE)
 
@@ -90,6 +96,77 @@ class DWDOpenDataAdapter:
             )
         return [scans[key] for key in sorted(scans)]
 
+    def list_files(
+        self,
+        *,
+        station: str = "ess",
+        start: Optional[datetime.datetime] = None,
+        end: Optional[datetime.datetime] = None,
+        limit: int = 20,
+        **_: Any,
+    ) -> list[RemoteRadarFile]:
+        scans = self.list_scans(station)
+        if start is not None:
+            start = self._ensure_utc(start)
+            scans = [scan for scan in scans if scan.scan_time >= start]
+        if end is not None:
+            end = self._ensure_utc(end)
+            scans = [scan for scan in scans if scan.scan_time <= end]
+        scans = scans[-max(1, min(int(limit), 1000)) :]
+        return [
+            RemoteRadarFile(
+                source_id=self.CAPABILITIES.source_id,
+                file_id=scan.filename,
+                filename=scan.filename,
+                url=scan.url,
+                native_format="ODIM_H5",
+                timestamp_utc=scan.scan_time,
+                station_id=station.upper(),
+                metadata={"filter": self.filter_name},
+            )
+            for scan in reversed(scans)
+        ]
+
+    def probe(
+        self,
+        download_test: bool = False,
+        station: str = "ess",
+        **kwargs: Any,
+    ) -> SourceProbeResult:
+        try:
+            stations = self.list_stations()
+            selected_station = station.lower() if station.lower() in stations else (stations[0] if stations else station)
+            files = self.list_files(station=selected_station, limit=1, **kwargs)
+            sample = files[0] if files else None
+            can_download = bool(sample) and (
+                verify_http_download(sample, session=self.session)
+                if download_test
+                else True
+            )
+            return SourceProbeResult(
+                source_id=self.CAPABILITIES.source_id,
+                status="available" if sample else "degraded",
+                reachable=True,
+                can_list=True,
+                can_download=can_download,
+                credential_state="not_required",
+                message=f"DWD source is reachable; {len(stations)} station directories found.",
+                sample=sample.to_metadata() if sample else None,
+            )
+        except Exception as exc:
+            return SourceProbeResult(
+                source_id=self.CAPABILITIES.source_id,
+                status="unavailable",
+                reachable=False,
+                can_list=False,
+                can_download=False,
+                credential_state="not_required",
+                message=str(exc),
+            )
+
+    def download(self, remote: RemoteRadarFile, output_dir: str) -> dict:
+        return download_http(remote, output_dir, session=self.session)
+
     def get_latest_sequence(
         self,
         seq_length: int,
@@ -101,10 +178,7 @@ class DWDOpenDataAdapter:
         station = self._station_code(station_code)
         scans = self.list_scans(station)
         if end_time is not None:
-            if end_time.tzinfo is None:
-                end_time = end_time.replace(tzinfo=datetime.UTC)
-            else:
-                end_time = end_time.astimezone(datetime.UTC)
+            end_time = self._ensure_utc(end_time)
             scans = [scan for scan in scans if scan.scan_time <= end_time]
         selected = self._select_regular_scans(scans, seq_length)
         frames = self._download_and_process(selected, station)
@@ -193,3 +267,9 @@ class DWDOpenDataAdapter:
         if not re.fullmatch(r"[a-z0-9]{3}", station):
             raise ValueError("DWD station must be a three-character code")
         return station
+
+    @staticmethod
+    def _ensure_utc(value: datetime.datetime) -> datetime.datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=datetime.UTC)
+        return value.astimezone(datetime.UTC)
