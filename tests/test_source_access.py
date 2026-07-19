@@ -9,7 +9,11 @@ from pathlib import Path
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from international_sources import DmiRadarSource, KnmiRadarSource  # noqa: E402
-from source_access import CredentialStore, SourceAccessError  # noqa: E402
+from source_access import (  # noqa: E402
+    CredentialStore,
+    SourceAccessError,
+    SourceProbeResult,
+)
 from source_registry import build_default_source_registry  # noqa: E402
 
 
@@ -62,6 +66,32 @@ class SourceAccessTest(unittest.TestCase):
                 os.environ.pop("TEST_RADAR_TOKEN", None)
                 if previous is not None:
                     os.environ["TEST_RADAR_TOKEN"] = previous
+
+    def test_probe_report_redacts_secret_fields_and_signed_queries(self):
+        report = SourceProbeResult(
+            source_id="fixture",
+            status="available",
+            reachable=True,
+            can_list=True,
+            can_download=True,
+            credential_state="present",
+            sample={
+                "url": "https://example.invalid/file.h5?signature=secret",
+                "Authorization": "secret-key",
+                "metadata": {
+                    "href": "https://example.invalid/other.h5?token=secret",
+                    "key": "public/object/key.h5",
+                },
+            },
+        ).to_metadata()
+
+        self.assertEqual(report["sample"]["url"], "https://example.invalid/file.h5")
+        self.assertEqual(report["sample"]["Authorization"], "<redacted>")
+        self.assertEqual(
+            report["sample"]["metadata"]["href"],
+            "https://example.invalid/other.h5",
+        )
+        self.assertEqual(report["sample"]["metadata"]["key"], "public/object/key.h5")
 
     def test_knmi_reports_missing_key_without_network_call(self):
         with tempfile.TemporaryDirectory() as directory:
