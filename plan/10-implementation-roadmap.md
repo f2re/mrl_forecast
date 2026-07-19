@@ -34,7 +34,7 @@
 ### Количественные источники
 
 - NOAA NEXRAD Level II — референсный источник, legacy и canonical adapters реализованы;
-- DWD Open Data — ODIM HDF5 DBZH adapter реализован, перед включением станции в train обязателен `check_dwd_source.py --decode-one`;
+- DWD Open Data — ODIM HDF5 DBZH adapter и raw archive workflow реализованы, перед включением станции в train обязателен `check_dwd_source.py --decode-one`;
 - ODIM HDF5/BUFR/NetCDF — расширяются по реальным fixtures;
 - российские ДМРЛ-BUFR — только после получения проверенного открытого файла или открытого endpoint.
 
@@ -58,7 +58,8 @@
 - `.npz` с отражаемостью, маской и сроками;
 - masked loss и masked evaluation;
 - обратная совместимость с legacy `.npy`;
-- запрет `mtime` как штатного срока наблюдения.
+- запрет `mtime` как штатного срока наблюдения;
+- выбор фактического шага источника при формировании последовательностей.
 
 Следующий долг P0: протащить дополнительные `coverage/clutter/interpolation` masks в export и пользовательскую диагностику для всех источников.
 
@@ -70,14 +71,15 @@
 - WIS2 discovery client;
 - Meteoinfo и RainViewer как visual-only;
 - DWD quantitative ODIM HDF5 adapter;
+- DWD raw archive downloader с SHA-256;
+- подготовка canonical masked dataset из DWD-архива;
 - health-checks для NOAA, DWD и открытых discovery-источников.
 
 Следующие задачи:
 
-1. добавить DWD raw archive downloader и штатный dataset job;
-2. сохранять контрольные суммы исходных файлов;
-3. построить простой SQLite-каталог файлов, сроков, станций и QC;
-4. продолжить мониторинг WIS2 на предмет открытых российских ДМРЛ.
+1. построить простой SQLite-каталог файлов, сроков, станций и QC;
+2. добавить source-specific ingest jobs в UI;
+3. продолжить мониторинг WIS2 на предмет открытых российских ДМРЛ.
 
 ### P2. Поиск событий и формирование выборки — базово реализовано
 
@@ -146,7 +148,7 @@ reflectivity + valid_mask
 - переключение слоёв отражаемости, переноса, роста, распада и неопределённости;
 - выбор `MRL-PhysEvolution` или ConvLSTM из интерфейса.
 
-Следующий долг: объединить команды в единый исполняемый CLI `mrl` и добавить source-specific ingest jobs.
+Следующий долг: объединить команды в единый исполняемый CLI `mrl` и добавить DWD ingest в UI job form.
 
 ### P6. CPU deployment — к выполнению
 
@@ -161,8 +163,8 @@ reflectivity + valid_mask
 
 ## Ближайший рабочий срез
 
-1. DWD raw archive downloader и подключение к dataset job.
-2. SQLite-каталог исходных кадров и QC.
+1. SQLite-каталог исходных кадров и QC.
+2. Source-specific ingest jobs в UI, включая DWD.
 3. Local block-motion/optical-flow baseline.
 4. Event-based split и независимый test set.
 5. Обучение `MRL-PhysEvolution` на canonical masked dataset и CPU benchmark.
