@@ -74,24 +74,62 @@ def grouped_temporal_split_indices(
     return train_indices, validation_indices
 
 
-def build_temporal_datasets(datasets, val_fraction):
+def grouped_train_validation_test_indices(
+    groups: list[str],
+    val_fraction: float,
+    test_fraction: float,
+    purge_groups: int = 1,
+):
+    """Create chronological train/validation/test blocks with purged boundaries."""
+
+    if not 0.0 < val_fraction < 1.0 or not 0.0 < test_fraction < 1.0:
+        raise ValueError("val_fraction and test_fraction must be between 0 and 1")
+    if val_fraction + test_fraction >= 0.8:
+        raise ValueError("Validation and test fractions leave too little training data")
+
+    ordered_groups = list(dict.fromkeys(groups))
+    validation_count = max(1, int(math.ceil(len(ordered_groups) * val_fraction)))
+    test_count = max(1, int(math.ceil(len(ordered_groups) * test_fraction)))
+    purge = max(0, int(purge_groups))
+    test_start = len(ordered_groups) - test_count
+    validation_stop = test_start - purge
+    validation_start = validation_stop - validation_count
+    train_stop = validation_start - purge
+    if train_stop < 1 or validation_start < 1 or test_start >= len(ordered_groups):
+        raise ValueError("Not enough chronological groups for independent test data")
+
+    train_groups = set(ordered_groups[:train_stop])
+    validation_groups = set(ordered_groups[validation_start:validation_stop])
+    test_groups = set(ordered_groups[test_start:])
+    train_indices = [index for index, group in enumerate(groups) if group in train_groups]
+    validation_indices = [index for index, group in enumerate(groups) if group in validation_groups]
+    test_indices = [index for index, group in enumerate(groups) if group in test_groups]
+    if not train_indices or not validation_indices or not test_indices:
+        raise ValueError("Three-way grouped split produced an empty partition")
+    return train_indices, validation_indices, test_indices
+
+
+def build_temporal_datasets(datasets, val_fraction, test_fraction):
     train_parts = []
     validation_parts = []
+    test_parts = []
     split_report = []
     for dataset in datasets:
         groups = sample_groups_for_dataset(dataset)
         unique_groups = list(dict.fromkeys(groups))
-        strategy = "purged_time_blocks"
+        strategy = "purged_train_validation_test"
+        test_indices = []
         try:
-            if len(unique_groups) < 3:
+            if len(unique_groups) < 5:
                 raise ValueError("too few groups")
-            train_indices, validation_indices = grouped_temporal_split_indices(
+            train_indices, validation_indices, test_indices = grouped_train_validation_test_indices(
                 groups,
                 val_fraction,
+                test_fraction,
                 purge_groups=1,
             )
         except ValueError:
-            strategy = "window_overlap_gap"
+            strategy = "window_overlap_gap_no_test"
             overlap = dataset.input_length + dataset.target_length - 1
             train_indices, validation_indices = temporal_split_indices(
                 len(dataset),
@@ -100,6 +138,8 @@ def build_temporal_datasets(datasets, val_fraction):
             )
         train_parts.append(Subset(dataset, train_indices))
         validation_parts.append(Subset(dataset, validation_indices))
+        if test_indices:
+            test_parts.append(Subset(dataset, test_indices))
         split_report.append(
             {
                 "dataset": dataset.data_dir.name,
@@ -107,9 +147,11 @@ def build_temporal_datasets(datasets, val_fraction):
                 "group_count": len(unique_groups),
                 "train_samples": len(train_indices),
                 "validation_samples": len(validation_indices),
+                "test_samples": len(test_indices),
             }
         )
-    return ConcatDataset(train_parts), ConcatDataset(validation_parts), split_report
+    test_dataset = ConcatDataset(test_parts) if test_parts else None
+    return ConcatDataset(train_parts), ConcatDataset(validation_parts), test_dataset, split_report
 
 
 def _forward_model(model, x, x_mask, architecture):
@@ -374,6 +416,13 @@ def _save_checkpoint(
     )
 
 
+def _load_checkpoint(path: str, device):
+    try:
+        return torch.load(path, map_location=device, weights_only=True)
+    except TypeError:
+        return torch.load(path, map_location=device)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dirs", required=True, help="Comma-separated processed datasets")
@@ -382,6 +431,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--val-split", type=float, default=0.2)
+    parser.add_argument("--test-split", type=float, default=0.1)
     parser.add_argument("--input-length", type=int, default=4)
     parser.add_argument("--target-length", type=int, default=4)
     parser.add_argument("--base-channels", type=int, default=16)
@@ -419,8 +469,10 @@ def main():
     model_grid = next(iter(grids.values()))
 
     try:
-        train_dataset, validation_dataset, split_report = build_temporal_datasets(
-            datasets, args.val_split
+        train_dataset, validation_dataset, test_dataset, split_report = build_temporal_datasets(
+            datasets,
+            args.val_split,
+            args.test_split,
         )
     except ValueError as exc:
         print(f"Error: {exc}")
@@ -445,12 +497,14 @@ def main():
         shuffle=sampler is None,
     )
     validation_loader = DataLoader(validation_dataset, batch_size=args.batch_size)
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size) if test_dataset else None
 
     model, criterion, model_config = _build_model(args, device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     model_id = f"model_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     model_dir = os.path.join(args.output_dir, model_id)
+    checkpoint_path = os.path.join(model_dir, "best_model.pt")
     os.makedirs(model_dir, exist_ok=True)
     metadata = {
         "type": "model",
@@ -460,6 +514,7 @@ def main():
         "loss": "physics_evolution" if args.architecture == "phys-evolution" else "masked_mse",
         "sampling": "dry_echo_50_50" if sampler is not None else "natural",
         "split": split_report,
+        "quality_gate_dataset": "independent_test" if test_loader else "validation_fallback",
         "hyperparameters": vars(args),
         "training_data": provenance,
         "pipeline_version": pipeline_version,
@@ -473,7 +528,7 @@ def main():
 
     history = {"train_loss": [], "val_loss": []}
     best_val_loss = float("inf")
-    best_metrics = None
+    best_validation_metrics = None
     try:
         for epoch in range(1, args.epochs + 1):
             train_loss = train_epoch(
@@ -482,29 +537,24 @@ def main():
             val_loss = validate_epoch(
                 model, validation_loader, criterion, device, args.architecture
             )
-            metrics = evaluate_model_quality(
-                model, validation_loader, device, args.architecture
-            )
             history["train_loss"].append(train_loss)
             history["val_loss"].append(val_loss)
-            print(
-                f"Epoch {epoch}/{args.epochs}: train={train_loss:.6f}, "
-                f"val={val_loss:.6f}, persistence={metrics['persistence_mse']:.6f}, "
-                f"block_motion={metrics['block_motion_mse']:.6f}"
-            )
+            print(f"Epoch {epoch}/{args.epochs}: train={train_loss:.6f}, val={val_loss:.6f}")
             save_history(model_dir, history)
             metadata["current_epoch"] = epoch
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                best_metrics = metrics
+                best_validation_metrics = evaluate_model_quality(
+                    model, validation_loader, device, args.architecture
+                )
                 metadata["metrics"] = {
                     "best_val_loss": val_loss,
                     "best_epoch": epoch,
-                    **metrics,
+                    **best_validation_metrics,
                 }
                 _save_checkpoint(
-                    os.path.join(model_dir, "best_model.pt"),
+                    checkpoint_path,
                     model,
                     args,
                     model_config,
@@ -513,14 +563,37 @@ def main():
                     model_grid,
                     val_loss,
                     epoch,
-                    metrics,
+                    best_validation_metrics,
+                )
+                print(
+                    f"Validation baselines: persistence={best_validation_metrics['persistence_mse']:.6f}, "
+                    f"block_motion={best_validation_metrics['block_motion_mse']:.6f}"
                 )
             save_metadata(model_dir, metadata)
 
-        if best_metrics is None:
+        if best_validation_metrics is None:
             raise RuntimeError("Training did not produce a valid checkpoint")
-        metadata["status"] = "completed" if best_metrics["quality_gate_passed"] else "rejected_quality_gate"
+
+        checkpoint = _load_checkpoint(checkpoint_path, device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        quality_loader = test_loader or validation_loader
+        quality_metrics = evaluate_model_quality(
+            model, quality_loader, device, args.architecture
+        )
+        metadata["quality_gate_metrics"] = quality_metrics
+        metadata["status"] = (
+            "completed" if quality_metrics["quality_gate_passed"] else "rejected_quality_gate"
+        )
+        checkpoint["quality_gate_dataset"] = metadata["quality_gate_dataset"]
+        checkpoint["quality_gate_metrics"] = quality_metrics
+        torch.save(checkpoint, checkpoint_path)
         save_metadata(model_dir, metadata)
+        print(
+            f"Quality gate ({metadata['quality_gate_dataset']}): "
+            f"model={quality_metrics['model_mse']:.6f}, "
+            f"persistence={quality_metrics['persistence_mse']:.6f}, "
+            f"block_motion={quality_metrics['block_motion_mse']:.6f}"
+        )
         print(f"Training complete. Model saved to {model_dir}")
     except Exception as exc:
         metadata["status"] = "failed"
