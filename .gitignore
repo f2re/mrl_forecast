@@ -12,6 +12,7 @@ models/*
 checkpoints/
 *.npy
 *.npz
+src/static/source_health.json
 
 # Logs
 training_log.csv
