@@ -1,4 +1,4 @@
-"""Downloadable international radar sources and access profiles."""
+"""Downloadable international radar sources and documented access profiles."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from radar_contract import RadarSourceCapabilities
 from source_access import (
     CredentialStore,
     RemoteRadarFile,
+    SourceAccessError,
     SourceProbeResult,
     download_http,
     download_s3_file,
@@ -24,11 +25,64 @@ from source_access import (
 )
 
 
-class FmiS3RadarSource:
+class OpenS3RadarSource:
+    """Reusable unsigned-S3 adapter with byte-range download verification."""
+
+    CAPABILITIES: RadarSourceCapabilities
+    BUCKET = ""
+    REGION = "us-east-1"
+    ENDPOINT_URL: Optional[str] = None
+    PUBLIC_BASE_URL: Optional[str] = None
+    NATIVE_FORMAT = "radar-file"
+
+    def list_files(self, prefix: str = "", limit: int = 20, **_: Any) -> list[RemoteRadarFile]:
+        return list_s3_files(
+            source_id=self.CAPABILITIES.source_id,
+            bucket=self.BUCKET,
+            region=self.REGION,
+            endpoint_url=self.ENDPOINT_URL,
+            public_base_url=self.PUBLIC_BASE_URL,
+            prefix=prefix,
+            limit=limit,
+            native_format=self.NATIVE_FORMAT,
+        )
+
+    def probe(
+        self,
+        download_test: bool = False,
+        prefix: str = "",
+        **_: Any,
+    ) -> SourceProbeResult:
+        try:
+            files = self.list_files(prefix=prefix, limit=1)
+            sample = files[0] if files else None
+            can_download = bool(sample) and (
+                verify_s3_download(sample) if download_test else True
+            )
+            return SourceProbeResult(
+                source_id=self.CAPABILITIES.source_id,
+                status="available" if sample else "degraded",
+                reachable=True,
+                can_list=True,
+                can_download=can_download,
+                credential_state="not_required",
+                message=self.CAPABILITIES.archive_note or "Public S3 source is reachable.",
+                sample=sample.to_metadata() if sample else None,
+            )
+        except Exception as exc:
+            return _failed_probe(self.CAPABILITIES, exc)
+
+    @staticmethod
+    def download(remote: RemoteRadarFile, output_dir: str) -> Dict[str, Any]:
+        return download_s3_file(remote, output_dir)
+
+
+class FmiS3RadarSource(OpenS3RadarSource):
     """Open FMI ODIM 2.3 single-radar volumes on AWS S3."""
 
     BUCKET = "fmi-opendata-radar-volume-hdf5"
     REGION = "eu-west-1"
+    NATIVE_FORMAT = "ODIM_H5"
     CAPABILITIES = RadarSourceCapabilities(
         source_id="fmi-s3",
         native_format="ODIM 2.3 HDF5 volumes",
@@ -45,46 +99,13 @@ class FmiS3RadarSource:
         archive_note="Operational volume stream, normally updated every five minutes.",
     )
 
-    def list_files(self, prefix: str = "", limit: int = 20, **_: Any) -> list[RemoteRadarFile]:
-        return list_s3_files(
-            source_id=self.CAPABILITIES.source_id,
-            bucket=self.BUCKET,
-            region=self.REGION,
-            prefix=prefix,
-            limit=limit,
-            native_format="ODIM_H5",
-        )
 
-    def probe(self, download_test: bool = False, prefix: str = "", **_: Any) -> SourceProbeResult:
-        try:
-            files = self.list_files(prefix=prefix, limit=1)
-            sample = files[0] if files else None
-            can_download = bool(sample) and (
-                verify_s3_download(sample) if download_test else True
-            )
-            return SourceProbeResult(
-                source_id=self.CAPABILITIES.source_id,
-                status="available" if sample else "degraded",
-                reachable=True,
-                can_list=True,
-                can_download=can_download,
-                credential_state="not_required",
-                message="FMI public S3 volume bucket is reachable.",
-                sample=sample.to_metadata() if sample else None,
-            )
-        except Exception as exc:
-            return _failed_probe(self.CAPABILITIES, exc)
-
-    @staticmethod
-    def download(remote: RemoteRadarFile, output_dir: str) -> Dict[str, Any]:
-        return download_s3_file(remote, output_dir)
-
-
-class Wis2GlobalCacheSource:
+class Wis2GlobalCacheSource(OpenS3RadarSource):
     """Open 24-hour WIS2 core-data cache on AWS."""
 
     BUCKET = "wis2globalcache"
     REGION = "us-east-1"
+    NATIVE_FORMAT = "WIS2_BUFR_GRIB_NETCDF"
     CAPABILITIES = RadarSourceCapabilities(
         source_id="wis2-cache",
         native_format="BUFR/GRIB/NetCDF WIS2 core data",
@@ -92,56 +113,24 @@ class Wis2GlobalCacheSource:
         training_allowed=False,
         visualization_allowed=False,
         raw_polar_volume=False,
-        notes="Generic 24-hour cache. Radar files require discovery metadata and format verification.",
+        notes="Generic cache; each object must be matched to verified WIS2 discovery metadata.",
         access_mode="open",
         probe_supported=True,
         download_supported=True,
         adapter_status="active",
-        archive_note="Rolling 24-hour cache; use WIS2 notifications for operational access.",
+        archive_note="Rolling 24-hour cache; radar availability depends on national publishers.",
     )
 
-    def list_files(self, prefix: str = "", limit: int = 20, **_: Any) -> list[RemoteRadarFile]:
-        return list_s3_files(
-            source_id=self.CAPABILITIES.source_id,
-            bucket=self.BUCKET,
-            region=self.REGION,
-            prefix=prefix,
-            limit=limit,
-            native_format="WIS2",
-        )
 
-    def probe(self, download_test: bool = False, prefix: str = "", **_: Any) -> SourceProbeResult:
-        try:
-            files = self.list_files(prefix=prefix, limit=1)
-            sample = files[0] if files else None
-            can_download = bool(sample) and (
-                verify_s3_download(sample) if download_test else True
-            )
-            return SourceProbeResult(
-                source_id=self.CAPABILITIES.source_id,
-                status="available" if sample else "degraded",
-                reachable=True,
-                can_list=True,
-                can_download=can_download,
-                credential_state="not_required",
-                message="WIS2 global cache is reachable; files are not assumed to be radar data.",
-                sample=sample.to_metadata() if sample else None,
-            )
-        except Exception as exc:
-            return _failed_probe(self.CAPABILITIES, exc)
-
-    @staticmethod
-    def download(remote: RemoteRadarFile, output_dir: str) -> Dict[str, Any]:
-        return download_s3_file(remote, output_dir)
-
-
-class OperaOrdRadarSource:
+class OperaOrdRadarSource(OpenS3RadarSource):
     """EUMETNET OPERA ORD API plus its anonymous 24-hour S3 cache."""
 
     BASE_URL = "https://api.meteogate.eu/eu-eumetnet-weather-radar"
-    CACHE_BUCKET = "openradar-24h"
-    CACHE_REGION = "waw3-1"
-    CACHE_ENDPOINT = "https://s3.waw3-1.cloudferro.com"
+    BUCKET = "openradar-24h"
+    REGION = "waw3-1"
+    ENDPOINT_URL = "https://s3.waw3-1.cloudferro.com"
+    PUBLIC_BASE_URL = f"{ENDPOINT_URL}/{BUCKET}"
+    NATIVE_FORMAT = "ODIM_H5_or_BUFR"
     CAPABILITIES = RadarSourceCapabilities(
         source_id="opera-ord",
         native_format="ODIM HDF5/BUFR single-site volumes and composites",
@@ -149,7 +138,7 @@ class OperaOrdRadarSource:
         training_allowed=False,
         visualization_allowed=True,
         raw_polar_volume=True,
-        notes="Anonymous ORD access is supported; verify per-file licence, field and scan metadata before training.",
+        notes="Anonymous access is supported; verify per-file licence, field and scan metadata before training.",
         access_mode="open_optional_key",
         credential_env="METEOGATE_API_KEY",
         registration_url="https://devportal.meteogate.eu/",
@@ -158,13 +147,13 @@ class OperaOrdRadarSource:
             "Complete the user profile if requested.",
             "Choose Create API Key and copy the key when it is shown.",
             "Run: python mrl.py sources --action configure --source opera-ord",
-            "Set METEOGATE_API_KEY_HEADER only if the selected MeteoGate route documents a specific header name.",
+            "Set METEOGATE_API_KEY_HEADER only when the selected route documents a header name.",
         ),
         probe_supported=True,
         download_supported=True,
         adapter_status="active",
         license_id="CC-BY-4.0 with provider exceptions",
-        archive_note="Single-site volumes currently have a rolling 24-hour cache; composites have a longer archive.",
+        archive_note="Single-site volumes use a rolling 24-hour cache; composites have a longer archive.",
     )
 
     def __init__(
@@ -182,18 +171,6 @@ class OperaOrdRadarSource:
         header_name = os.environ.get("METEOGATE_API_KEY_HEADER")
         return {header_name: token} if token and header_name else {}
 
-    def list_files(self, prefix: str = "", limit: int = 20, **_: Any) -> list[RemoteRadarFile]:
-        return list_s3_files(
-            source_id=self.CAPABILITIES.source_id,
-            bucket=self.CACHE_BUCKET,
-            region=self.CACHE_REGION,
-            endpoint_url=self.CACHE_ENDPOINT,
-            public_base_url=f"{self.CACHE_ENDPOINT}/{self.CACHE_BUCKET}",
-            prefix=prefix,
-            limit=limit,
-            native_format="ODIM_H5_or_BUFR",
-        )
-
     def query(
         self,
         *,
@@ -204,10 +181,8 @@ class OperaOrdRadarSource:
         level: str = "",
         method: str = "scan",
     ) -> list[RemoteRadarFile]:
-        start_text = _utc_text(start)
-        end_text = _utc_text(end)
         params = {
-            "datetime": f"{start_text}/{end_text}",
+            "datetime": f"{_utc_text(start)}/{_utc_text(end)}",
             "f": "CoverageJSON",
             "standard_name": standard_name,
             "format": "ODIM",
@@ -243,13 +218,18 @@ class OperaOrdRadarSource:
                 file_id=url,
                 filename=filename,
                 url=url,
-                native_format="ODIM_H5_or_BUFR",
+                native_format=self.NATIVE_FORMAT,
                 station_id=location_id,
                 metadata={"standard_name": standard_name, "link": link},
             )
         return list(files.values())
 
-    def probe(self, download_test: bool = False, prefix: str = "", **_: Any) -> SourceProbeResult:
+    def probe(
+        self,
+        download_test: bool = False,
+        prefix: str = "",
+        **_: Any,
+    ) -> SourceProbeResult:
         credential_state = self.credentials.state(self.CAPABILITIES)
         try:
             response = self.session.get(
@@ -258,29 +238,19 @@ class OperaOrdRadarSource:
                 timeout=self.timeout_seconds,
             )
             response.raise_for_status()
-            files = self.list_files(prefix=prefix, limit=1)
-            sample = files[0] if files else None
-            can_download = bool(sample) and (
-                verify_s3_download(sample) if download_test else True
-            )
+            base_probe = super().probe(download_test=download_test, prefix=prefix)
             return SourceProbeResult(
                 source_id=self.CAPABILITIES.source_id,
-                status="available" if sample else "degraded",
+                status=base_probe.status,
                 reachable=True,
-                can_list=True,
-                can_download=can_download,
+                can_list=base_probe.can_list,
+                can_download=base_probe.can_download,
                 credential_state=credential_state,
-                message="ORD API is reachable in anonymous mode; an API key is optional for higher limits.",
-                sample=sample.to_metadata() if sample else None,
+                message="ORD API and anonymous S3 cache are reachable; API key is optional for higher limits.",
+                sample=base_probe.sample,
             )
         except Exception as exc:
             return _failed_probe(self.CAPABILITIES, exc, credential_state)
-
-    @staticmethod
-    def download(remote: RemoteRadarFile, output_dir: str) -> Dict[str, Any]:
-        if remote.metadata.get("bucket"):
-            return download_s3_file(remote, output_dir)
-        return download_http(remote, output_dir)
 
 
 class DmiRadarSource:
@@ -325,7 +295,10 @@ class DmiRadarSource:
         if station and collection != "composite":
             params["stationId"] = station
         if start or end:
-            params["datetime"] = f"{_utc_text(start) if start else '..'}/{_utc_text(end) if end else '..'}"
+            params["datetime"] = (
+                f"{_utc_text(start) if start else '..'}/"
+                f"{_utc_text(end) if end else '..'}"
+            )
         response = self.session.get(
             f"{self.BASE_URL}/collections/{collection}/items",
             params=params,
@@ -365,7 +338,9 @@ class DmiRadarSource:
             files = self.list_files(limit=1, **kwargs)
             sample = files[0] if files else None
             can_download = bool(sample) and (
-                verify_http_download(sample, session=self.session) if download_test else True
+                verify_http_download(sample, session=self.session)
+                if download_test
+                else True
             )
             return SourceProbeResult(
                 source_id=self.CAPABILITIES.source_id,
@@ -402,18 +377,18 @@ class KnmiRadarSource:
         credential_env="KNMI_API_KEY",
         registration_url="https://developer.dataplatform.knmi.nl/open-data-api",
         registration_steps=(
-            "Send an email to opendata@knmi.nl with your name, organisation and reason for access if portal sign-up is unavailable.",
+            "Send opendata@knmi.nl your name, organisation and reason for access if portal sign-up is unavailable.",
             "After the account is enabled, sign in to the KNMI Developer Portal.",
-            "Open API Catalog, select Open Data API and choose Request an API key.",
+            "Open API Catalog, select Open Data API and request an API key.",
             "Copy the key when displayed; it may not be shown again.",
             "Run: python mrl.py sources --action configure --source knmi-radar",
-            "For a complete dataset, request a bulk key from opendata@knmi.nl and state the dataset name/version.",
+            "For bulk access, request a bulk key and state the dataset name/version.",
         ),
         probe_supported=True,
         download_supported=True,
         adapter_status="active",
         license_id="CC-BY-4.0",
-        archive_note="Current 5-minute files and daily TAR archives are separate KNMI datasets.",
+        archive_note="Current files and daily TAR archives are separate KNMI datasets.",
     )
 
     def __init__(
@@ -538,8 +513,11 @@ class KnmiRadarSource:
             return _failed_probe(self.CAPABILITIES, exc, credential_state)
 
     def download(self, remote: RemoteRadarFile, output_dir: str) -> Dict[str, Any]:
-        resolved = self.resolve_download(remote)
-        return download_http(resolved, output_dir, session=self.session)
+        return download_http(
+            self.resolve_download(remote),
+            output_dir,
+            session=self.session,
+        )
 
 
 class ManualAccessSource:
@@ -564,107 +542,174 @@ class ManualAccessSource:
         try:
             response = self.session.get(self.landing_url, timeout=self.timeout_seconds)
             response.raise_for_status()
+            status = "manual_registration"
+            if self.CAPABILITIES.credential_required and credential_state == "missing":
+                status = "credential_required"
             return SourceProbeResult(
                 source_id=self.CAPABILITIES.source_id,
-                status=(
-                    "credential_required"
-                    if self.CAPABILITIES.credential_required and credential_state == "missing"
-                    else "manual_registration"
-                ),
+                status=status,
                 reachable=True,
                 can_list=False,
                 can_download=False,
                 credential_state=credential_state,
-                message="Landing or registration page is reachable; automated file download is not implemented.",
+                message="Landing/registration page is reachable; automated file download is not implemented.",
             )
         except Exception as exc:
             return _failed_probe(self.CAPABILITIES, exc, credential_state)
 
 
+def _manual(
+    *,
+    source_id: str,
+    native_format: str,
+    landing_url: str,
+    notes: str,
+    access_mode: str,
+    registration_url: str = "",
+    registration_steps: tuple[str, ...] = (),
+    credential_env: str = "",
+    quantitative: bool = True,
+    raw: bool = False,
+    licence: str = "",
+) -> tuple[RadarSourceCapabilities, str]:
+    return (
+        RadarSourceCapabilities(
+            source_id=source_id,
+            native_format=native_format,
+            quantitative_reflectivity=quantitative,
+            training_allowed=False,
+            visualization_allowed=True,
+            raw_polar_volume=raw,
+            notes=notes,
+            access_mode=access_mode,
+            credential_env=credential_env,
+            registration_url=registration_url or landing_url,
+            registration_steps=registration_steps,
+            probe_supported=True,
+            download_supported=False,
+            adapter_status="manual" if access_mode == "request_required" else "probe_only",
+            license_id=licence,
+        ),
+        landing_url,
+    )
+
+
 MANUAL_SOURCE_PROFILES = {
-    "meteofrance-radar": (
-        RadarSourceCapabilities(
-            source_id="meteofrance-radar",
-            native_format="Météo-France Package Radar",
-            quantitative_reflectivity=True,
-            training_allowed=False,
-            access_mode="account_required",
-            credential_env="METEOFRANCE_API_TOKEN",
-            registration_url="https://portail-api.meteofrance.fr/",
-            registration_steps=(
-                "Create or sign in to an account on the Météo-France API portal.",
-                "Subscribe to Données Publiques Paquet Radar.",
-                "Create/copy the API token shown by the portal.",
-                "Run: python mrl.py sources --action configure --source meteofrance-radar",
-            ),
-            probe_supported=True,
-            download_supported=False,
-            adapter_status="probe_only",
-            license_id="Licence Ouverte 2.0",
-            notes="Account access is documented; endpoint-specific downloader remains to be implemented.",
-        ),
-        "https://www.data.gouv.fr/dataservices/api-package-radar",
+    "wmo-radar-db": _manual(
+        source_id="wmo-radar-db",
+        native_format="global radar metadata",
+        landing_url="https://wrd.mgm.gov.tr/Home/Wrd",
+        notes="Global radar location/status catalogue; it does not host measurement files.",
+        access_mode="discovery_only",
+        quantitative=False,
     ),
-    "ceda-nimrod": (
-        RadarSourceCapabilities(
-            source_id="ceda-nimrod",
-            native_format="NIMROD/polar radar collections",
-            quantitative_reflectivity=True,
-            training_allowed=False,
-            access_mode="account_required",
-            registration_url="https://services.ceda.ac.uk/cedasite/register/info/",
-            registration_steps=(
-                "Create a CEDA account.",
-                "Open the required NIMROD dataset record and apply for access if requested.",
-                "Accept the dataset terms and use the CEDA download mechanism documented for the collection.",
-            ),
-            probe_supported=True,
-            download_supported=False,
-            adapter_status="manual",
-            notes="CEDA account and dataset permissions are handled outside MRL Forecast.",
+    "meteofrance-radar": _manual(
+        source_id="meteofrance-radar",
+        native_format="Météo-France Package Radar",
+        landing_url="https://www.data.gouv.fr/dataservices/api-package-radar",
+        notes="Account access is documented; endpoint-specific downloader remains to be implemented.",
+        access_mode="account_required",
+        credential_env="METEOFRANCE_API_TOKEN",
+        registration_url="https://portail-api.meteofrance.fr/",
+        registration_steps=(
+            "Create/sign in to an account on the Météo-France API portal.",
+            "Subscribe to Données Publiques Paquet Radar.",
+            "Create/copy the API token shown by the portal.",
+            "Run: python mrl.py sources --action configure --source meteofrance-radar",
         ),
-        "https://catalogue.ceda.ac.uk/uuid/82adec1f896af6169112d09cc1174499/",
+        licence="Licence Ouverte 2.0",
     ),
-    "aura-nci": (
-        RadarSourceCapabilities(
-            source_id="aura-nci",
-            native_format="ODIM_H5/CfRadial/NetCDF",
-            quantitative_reflectivity=True,
-            training_allowed=False,
-            access_mode="request_required",
-            registration_url="https://opus.nci.org.au/spaces/NDP/pages/399803502/Australian+Unified+Radar+Archive",
-            registration_steps=(
-                "Create an NCI account.",
-                "Request membership in a project that grants access to the required AURA collection.",
-                "Follow the NCI data collection instructions for Level 0/1/1b/2 products.",
-            ),
-            probe_supported=True,
-            download_supported=False,
-            adapter_status="manual",
-            notes="NCI project access is required for AURA datasets.",
+    "ceda-nimrod": _manual(
+        source_id="ceda-nimrod",
+        native_format="NIMROD and polar radar collections",
+        landing_url="https://catalogue.ceda.ac.uk/uuid/82adec1f896af6169112d09cc1174499/",
+        notes="CEDA account and dataset permissions are handled outside MRL Forecast.",
+        access_mode="account_required",
+        registration_url="https://services.ceda.ac.uk/cedasite/register/info/",
+        registration_steps=(
+            "Create a CEDA account.",
+            "Open the required NIMROD dataset and apply for access if requested.",
+            "Accept the dataset terms and follow its documented download method.",
         ),
-        "https://opus.nci.org.au/spaces/NDP/pages/399803502/Australian+Unified+Radar+Archive",
+        raw=True,
     ),
-    "ncradar-cao": (
-        RadarSourceCapabilities(
-            source_id="ncradar-cao",
-            native_format="NCRadar NetCDF / possible FM 94 BUFR export",
-            quantitative_reflectivity=True,
-            training_allowed=False,
-            access_mode="request_required",
-            registration_url="https://www.cao-rhms.ru/ncradar/ncradar.pdf",
-            registration_steps=(
-                "Prepare a formal request to the Central Aerological Observatory (ЦАО).",
-                "Specify radar/WIGOS IDs, date range, complete volumes or elevation scans and required quantities.",
-                "Request DBZH/TH/VRADH/WRADH and dual-pol fields with QC masks where available.",
-                "Ask for NetCDF/CfRadial, ODIM_H5 or FM 94 BUFR and an explicit data-use agreement.",
-            ),
-            probe_supported=True,
-            download_supported=False,
-            adapter_status="manual",
-            notes="No verified anonymous file catalogue or API is currently known.",
+    "meteoswiss-radar": _manual(
+        source_id="meteoswiss-radar",
+        native_format="STAC/ODIM HDF5 gridded radar products",
+        landing_url="https://opendatadocs.meteoswiss.ch/d-radar-data/d1-precipitation-radar-products",
+        notes="Open products; automated STAC item selection remains to be implemented.",
+        access_mode="open",
+        licence="Swiss Open Government Data terms",
+    ),
+    "geosphere-radar": _manual(
+        source_id="geosphere-radar",
+        native_format="polar radar volume files",
+        landing_url="https://data.hub.geosphere.at/dataset/radar_volumen_hochficht-v1-5min",
+        notes="Open short rolling archive; Data Hub API adapter remains to be implemented.",
+        access_mode="open",
+        raw=True,
+    ),
+    "aura-nci": _manual(
+        source_id="aura-nci",
+        native_format="ODIM_H5/CfRadial/NetCDF",
+        landing_url="https://opus.nci.org.au/spaces/NDP/pages/399803502/Australian+Unified+Radar+Archive",
+        notes="NCI account/project access is required for AURA datasets.",
+        access_mode="request_required",
+        registration_steps=(
+            "Create an NCI account.",
+            "Request project membership for the required AURA collection.",
+            "Follow the collection instructions for Level 0/1/1b/2 data.",
         ),
-        "https://www.cao-rhms.ru/ncradar/ncradar.pdf",
+        raw=True,
+    ),
+    "metservice-radar": _manual(
+        source_id="metservice-radar",
+        native_format="SFTP radar images",
+        landing_url="https://about.metservice.com/open-access-data",
+        notes="Free access is provided after a request; products are images rather than polar volumes.",
+        access_mode="request_required",
+        registration_steps=(
+            "Submit the MetService Open Access Data request.",
+            "Obtain SFTP connection details and permitted-use terms.",
+        ),
+        quantitative=False,
+    ),
+    "taiwan-qpesums": _manual(
+        source_id="taiwan-qpesums",
+        native_format="XML/JSON gridded reflectivity API",
+        landing_url="https://data.gov.tw/en/datasets/76629",
+        notes="Open QPESUMS grid; mass-download authentication and schema adapter remain to be implemented.",
+        access_mode="open_optional_key",
+    ),
+    "nasa-gpm-gv": _manual(
+        source_id="nasa-gpm-gv",
+        native_format="research radar campaign products",
+        landing_url="https://www.earthdata.nasa.gov/data/projects/gpm-gv",
+        notes="NASA Earthdata account and collection-specific access are required.",
+        access_mode="account_required",
+        credential_env="EARTHDATA_TOKEN",
+        registration_url="https://urs.earthdata.nasa.gov/users/new",
+        registration_steps=(
+            "Create a NASA Earthdata Login account.",
+            "Accept the terms for the selected GHRC/GPM-GV collection.",
+            "Create an Earthdata token when token access is supported.",
+            "Run: python mrl.py sources --action configure --source nasa-gpm-gv",
+        ),
+        raw=True,
+    ),
+    "ncradar-cao": _manual(
+        source_id="ncradar-cao",
+        native_format="NCRadar NetCDF / possible FM 94 BUFR export",
+        landing_url="https://www.cao-rhms.ru/ncradar/ncradar.pdf",
+        notes="No verified anonymous file catalogue or API is currently known.",
+        access_mode="request_required",
+        registration_steps=(
+            "Prepare a formal request to the Central Aerological Observatory (ЦАО).",
+            "Specify radar/WIGOS IDs, date range, volumes/elevation scans and required quantities.",
+            "Request DBZH/TH/VRADH/WRADH and dual-pol fields with QC masks where available.",
+            "Ask for NetCDF/CfRadial, ODIM_H5 or FM 94 BUFR and explicit data-use terms.",
+        ),
+        raw=True,
     ),
 }
 
@@ -692,8 +737,7 @@ def _utc_text(value: datetime.datetime) -> str:
 
 
 def _looks_like_radar_file(filename: str) -> bool:
-    lowered = filename.lower()
-    return lowered.endswith((".h5", ".hdf5", ".bufr", ".tif", ".tiff", ".nc"))
+    return filename.lower().endswith((".h5", ".hdf5", ".bufr", ".tif", ".tiff", ".nc"))
 
 
 def _walk_links(payload: Any) -> Iterable[Dict[str, Any]]:
