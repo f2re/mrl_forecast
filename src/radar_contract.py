@@ -98,8 +98,14 @@ class CanonicalRadarFrame:
         if values.shape != self.grid.shape:
             raise ValueError(f"Frame shape {values.shape} does not match grid {self.grid.shape}")
 
-        coverage = valid.copy() if self.coverage_mask is None else np.asarray(self.coverage_mask, dtype=bool)
-        clutter = np.zeros_like(valid) if self.clutter_mask is None else np.asarray(self.clutter_mask, dtype=bool)
+        coverage = valid.copy() if self.coverage_mask is None else np.asarray(
+            self.coverage_mask,
+            dtype=bool,
+        )
+        clutter = np.zeros_like(valid) if self.clutter_mask is None else np.asarray(
+            self.clutter_mask,
+            dtype=bool,
+        )
         weights = valid.astype(np.float32) if self.interpolation_weight is None else np.asarray(
             self.interpolation_weight,
             dtype=np.float32,
@@ -112,28 +118,32 @@ class CanonicalRadarFrame:
             if array.shape != values.shape:
                 raise ValueError(f"{name} must match reflectivity shape")
 
+        effective_valid = valid & coverage & ~clutter & np.isfinite(weights) & (weights > 0.0)
         timestamp = self.timestamp_utc
         if timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=datetime.UTC)
         else:
             timestamp = timestamp.astimezone(datetime.UTC)
 
-        self.reflectivity_dbz = np.where(valid, values, np.nan).astype(np.float32)
-        self.valid_mask = valid
+        self.reflectivity_dbz = np.where(effective_valid, values, np.nan).astype(np.float32)
+        self.valid_mask = effective_valid
         self.coverage_mask = coverage
         self.clutter_mask = clutter
-        self.interpolation_weight = np.clip(weights, 0.0, 1.0)
+        self.interpolation_weight = np.clip(np.nan_to_num(weights, nan=0.0), 0.0, 1.0)
         self.timestamp_utc = timestamp
         self.station_id = self.station_id.upper()
         self.source_id = self.source_id.lower()
 
     @classmethod
     def from_radar_frame(cls, frame: Any, grid: CanonicalGridSpec) -> "CanonicalRadarFrame":
-        """Convert the current pipeline RadarFrame without losing provenance."""
+        """Convert a pipeline RadarFrame without losing quality or provenance."""
 
         return cls(
             reflectivity_dbz=frame.data,
             valid_mask=frame.valid_mask,
+            coverage_mask=getattr(frame, "coverage_mask", None),
+            clutter_mask=getattr(frame, "clutter_mask", None),
+            interpolation_weight=getattr(frame, "interpolation_weight", None),
             timestamp_utc=frame.timestamp_utc,
             station_id=frame.station,
             source_id=frame.source,
@@ -144,10 +154,22 @@ class CanonicalRadarFrame:
         )
 
     def to_model_arrays(self, fill_value: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
-        """Return reflectivity and mask arrays suitable for model input."""
+        """Return reflectivity and effective validity arrays for model input."""
 
         values = np.where(self.valid_mask, self.reflectivity_dbz, fill_value).astype(np.float32)
         return values, self.valid_mask.astype(np.float32)
+
+    def quality_summary(self) -> Dict[str, float]:
+        return {
+            "valid_fraction": float(self.valid_mask.mean()),
+            "coverage_fraction": float(self.coverage_mask.mean()),
+            "clutter_fraction": float(self.clutter_mask.mean()),
+            "mean_interpolation_weight": (
+                float(self.interpolation_weight[self.coverage_mask].mean())
+                if np.any(self.coverage_mask)
+                else 0.0
+            ),
+        }
 
     def to_metadata(self) -> Dict[str, Any]:
         return {
@@ -156,8 +178,7 @@ class CanonicalRadarFrame:
             "source_id": self.source_id,
             "product_id": self.product_id,
             "grid": self.grid.to_metadata(),
-            "valid_fraction": float(self.valid_mask.mean()),
-            "coverage_fraction": float(self.coverage_mask.mean()),
+            **self.quality_summary(),
             "qc": self.qc,
             "provenance": self.provenance,
         }
