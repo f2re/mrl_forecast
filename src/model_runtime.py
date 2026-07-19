@@ -106,6 +106,7 @@ class ModelRuntime:
             "input_length": input_length,
             "target_length": target_length,
             "metrics": checkpoint.get("metrics", {}),
+            "quality_gate_metrics": checkpoint.get("quality_gate_metrics", {}),
         }
         return dict(self.info)
 
@@ -113,12 +114,21 @@ class ModelRuntime:
         self,
         reflectivity_dbz: np.ndarray,
         valid_mask: Optional[np.ndarray] = None,
+        coverage_mask: Optional[np.ndarray] = None,
+        clutter_mask: Optional[np.ndarray] = None,
+        interpolation_weight: Optional[np.ndarray] = None,
     ) -> Dict[str, Any]:
         if self.model is None:
             raise RuntimeError("No model is loaded")
-        values, masks = self._prepare_arrays(reflectivity_dbz, valid_mask)
+        values, effective_mask, quality = self._prepare_arrays(
+            reflectivity_dbz,
+            valid_mask,
+            coverage_mask,
+            clutter_mask,
+            interpolation_weight,
+        )
         x = torch.from_numpy(values).unsqueeze(0).unsqueeze(2).to(self.device)
-        x_mask = torch.from_numpy(masks).unsqueeze(0).unsqueeze(2).to(self.device)
+        x_mask = torch.from_numpy(effective_mask).unsqueeze(0).unsqueeze(2).to(self.device)
 
         with torch.no_grad():
             if self.architecture == "phys-evolution":
@@ -128,11 +138,17 @@ class ModelRuntime:
                 diagnostics = {"states": states}
 
         forecast = prediction[0, :, 0].cpu().numpy()
+        forecast_quality = {
+            name: np.repeat(array[-1:, ...], self.target_length, axis=0)
+            for name, array in quality.items()
+        }
         result = {
             "input": x[0, :, 0].cpu().numpy(),
             "input_mask": x_mask[0, :, 0].cpu().numpy().astype(bool),
             "forecast": forecast,
             "diagnostics": self._diagnostics_to_numpy(diagnostics),
+            "quality_masks": quality,
+            "forecast_quality_masks": forecast_quality,
         }
         return result
 
@@ -140,7 +156,10 @@ class ModelRuntime:
         self,
         reflectivity_dbz: np.ndarray,
         valid_mask: Optional[np.ndarray],
-    ) -> tuple[np.ndarray, np.ndarray]:
+        coverage_mask: Optional[np.ndarray],
+        clutter_mask: Optional[np.ndarray],
+        interpolation_weight: Optional[np.ndarray],
+    ) -> tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
         values = np.asarray(reflectivity_dbz, dtype=np.float32)
         if values.ndim == 4 and values.shape[-1] == 1:
             values = values.squeeze(-1)
@@ -152,22 +171,65 @@ class ModelRuntime:
             )
         values = values[-self.input_length:]
 
-        if valid_mask is None:
-            masks = np.isfinite(values)
-        else:
-            masks = np.asarray(valid_mask, dtype=bool)
-            if masks.ndim == 4 and masks.shape[-1] == 1:
-                masks = masks.squeeze(-1)
-            if masks.shape[0] >= self.input_length:
-                masks = masks[-self.input_length:]
-            if masks.shape != values.shape:
-                raise ValueError("valid_mask must match selected reflectivity history")
-
         expected = self.expected_grid_shape()
         if expected and values.shape[-2:] != expected:
             raise ValueError(f"Source grid {values.shape[-2:]} is incompatible with model grid {expected}")
-        normalized = np.clip(np.where(masks, values, 0.0), 0.0, MAX_DBZ) / MAX_DBZ
-        return normalized.astype(np.float32), masks.astype(np.float32)
+
+        valid = self._quality_array(
+            "valid_mask",
+            valid_mask,
+            np.isfinite(values),
+            values.shape,
+            bool,
+        )
+        coverage = self._quality_array(
+            "coverage_mask",
+            coverage_mask,
+            np.ones_like(valid),
+            values.shape,
+            bool,
+        )
+        clutter = self._quality_array(
+            "clutter_mask",
+            clutter_mask,
+            np.zeros_like(valid),
+            values.shape,
+            bool,
+        )
+        weights = self._quality_array(
+            "interpolation_weight",
+            interpolation_weight,
+            valid.astype(np.float32),
+            values.shape,
+            np.float32,
+        )
+        weights = np.clip(np.nan_to_num(weights, nan=0.0), 0.0, 1.0)
+        effective = valid & coverage & ~clutter & (weights > 0.0)
+        normalized = np.clip(np.where(effective, values, 0.0), 0.0, MAX_DBZ) / MAX_DBZ
+        quality = {
+            "valid_mask": effective.astype(bool),
+            "coverage_mask": coverage.astype(bool),
+            "clutter_mask": clutter.astype(bool),
+            "interpolation_weight": weights.astype(np.float32),
+        }
+        return normalized.astype(np.float32), effective.astype(np.float32), quality
+
+    def _quality_array(
+        self,
+        name: str,
+        value: Optional[np.ndarray],
+        default: np.ndarray,
+        expected_shape: tuple[int, int, int],
+        dtype,
+    ) -> np.ndarray:
+        array = np.asarray(default if value is None else value, dtype=dtype)
+        if array.ndim == 4 and array.shape[-1] == 1:
+            array = array.squeeze(-1)
+        if array.shape[0] >= self.input_length:
+            array = array[-self.input_length:]
+        if array.shape != expected_shape:
+            raise ValueError(f"{name} shape {array.shape} does not match selected history {expected_shape}")
+        return array
 
     def expected_grid_shape(self) -> Optional[tuple[int, int]]:
         width = self.grid.get("width")
