@@ -20,7 +20,7 @@ sys.path.append(str(pathlib.Path(__file__).parent))
 
 from adapters import DemoRadarAdapter, LocalDirectoryAdapter, NOAAAWSAdapter, NOAAFTPAdapter
 from config import MAX_DBZ, PRODUCT_NAME
-from diagnostic_visualization import render_evolution_layers
+from diagnostic_visualization import render_evolution_layers, render_quality_layers
 from dwd_source import DWDOpenDataAdapter
 from export_utils import save_forecast_to_netcdf
 from forecast_quality import summarize_forecast
@@ -43,6 +43,17 @@ RUNTIME = ModelRuntime(torch.device("cuda" if torch.cuda.is_available() else "cp
 JOB_STORE = JobStore()
 CATALOG = RadarCatalog()
 LAST_FORECAST: Dict = {}
+
+LAYER_LABELS = {
+    "motion": "Перенос",
+    "growth": "Рост",
+    "decay": "Распад",
+    "uncertainty": "Неопределённость",
+    "valid_mask": "Валидность",
+    "coverage_mask": "Покрытие",
+    "clutter_mask": "Помехи",
+    "interpolation_weight": "Вес интерполяции",
+}
 
 
 def _lead_times_minutes() -> List[int]:
@@ -130,6 +141,13 @@ def _parse_timestamp(value) -> datetime.datetime:
     return timestamp.astimezone(datetime.UTC)
 
 
+def _payload_quality_array(payload, name, default, shape, dtype):
+    array = np.asarray(payload[name] if name in payload else default, dtype=dtype)
+    if array.shape != shape:
+        raise ValueError(f"{name} имеет форму {array.shape}, ожидается {shape}")
+    return array
+
+
 def _uploaded_sequence(uploaded):
     payload = np.load(uploaded.stream, allow_pickle=False)
     inferred_time = False
@@ -141,15 +159,53 @@ def _uploaded_sequence(uploaded):
                 values = np.asarray(payload["arr_0"], dtype=np.float32)
             else:
                 raise ValueError("NPZ не содержит reflectivity или arr_0")
-            masks = np.asarray(payload["valid_mask"], dtype=bool) if "valid_mask" in payload else np.isfinite(values)
+            if values.ndim != 3:
+                raise ValueError("reflectivity должен иметь форму [T,H,W]")
+            valid = _payload_quality_array(
+                payload,
+                "valid_mask",
+                np.isfinite(values),
+                values.shape,
+                bool,
+            )
+            coverage = _payload_quality_array(
+                payload,
+                "coverage_mask",
+                np.ones_like(valid),
+                values.shape,
+                bool,
+            )
+            clutter = _payload_quality_array(
+                payload,
+                "clutter_mask",
+                np.zeros_like(valid),
+                values.shape,
+                bool,
+            )
+            weights = _payload_quality_array(
+                payload,
+                "interpolation_weight",
+                valid.astype(np.float32),
+                values.shape,
+                np.float32,
+            )
             timestamps_raw = payload["timestamps_utc"] if "timestamps_utc" in payload else None
         else:
             values = np.asarray(payload, dtype=np.float32)
-            masks = np.isfinite(values)
+            if values.ndim != 3:
+                raise ValueError("Загруженный NPY должен иметь форму [T,H,W]")
+            valid = np.isfinite(values)
+            coverage = np.ones_like(valid)
+            clutter = np.zeros_like(valid)
+            weights = valid.astype(np.float32)
             timestamps_raw = None
 
-        if values.ndim != 3 or masks.shape != values.shape:
-            raise ValueError("Загруженный файл должен содержать reflectivity и mask формы [T,H,W]")
+        quality = {
+            "valid_mask": valid,
+            "coverage_mask": coverage,
+            "clutter_mask": clutter,
+            "interpolation_weight": np.clip(np.nan_to_num(weights, nan=0.0), 0.0, 1.0),
+        }
         if timestamps_raw is not None:
             timestamps = [_parse_timestamp(value) for value in timestamps_raw]
             if len(timestamps) != values.shape[0]:
@@ -163,7 +219,7 @@ def _uploaded_sequence(uploaded):
                 )
                 for index in range(len(values))
             ]
-        return values, masks, timestamps, inferred_time
+        return values, quality, timestamps, inferred_time
     finally:
         if isinstance(payload, np.lib.npyio.NpzFile):
             payload.close()
@@ -212,6 +268,21 @@ def _evolution_summary(diagnostics: Dict[str, np.ndarray]) -> Dict[str, float]:
         if name in diagnostics:
             summary[f"mean_{name}"] = float(np.mean(diagnostics[name]))
     return summary
+
+
+def _quality_summary(quality: Dict[str, np.ndarray]) -> Dict[str, float]:
+    valid = np.asarray(quality.get("valid_mask"), dtype=bool)
+    coverage = np.asarray(quality.get("coverage_mask"), dtype=bool)
+    clutter = np.asarray(quality.get("clutter_mask"), dtype=bool)
+    weights = np.asarray(quality.get("interpolation_weight"), dtype=np.float32)
+    return {
+        "valid_fraction": float(valid.mean()),
+        "coverage_fraction": float(coverage.mean()),
+        "clutter_fraction": float(clutter.mean()),
+        "mean_interpolation_weight": (
+            float(weights[coverage].mean()) if np.any(coverage) else 0.0
+        ),
+    }
 
 
 def _enqueue_download_job() -> dict:
@@ -375,7 +446,7 @@ def predict():
             uploaded = request.files.get("file")
             if not uploaded:
                 return jsonify({"error": "Файл не выбран"}), 400
-            values, masks, timestamps, inferred_time = _uploaded_sequence(uploaded)
+            values, quality, timestamps, inferred_time = _uploaded_sequence(uploaded)
             status_message = "Файл загружен вручную"
             source_status = "observed"
             if inferred_time:
@@ -383,15 +454,22 @@ def predict():
         else:
             sequence = _get_observed_sequence(source_type, station_code)
             values = sequence.stack(require_observed=sequence.status == "observed")
-            masks = np.stack([frame.valid_mask for frame in sequence.frames], axis=0)
+            quality = sequence.quality_arrays()
             timestamps = sequence.timestamps
             status_message = sequence.message
             source_status = sequence.status
 
-        result = RUNTIME.predict(values, masks)
+        result = RUNTIME.predict(
+            values,
+            valid_mask=quality["valid_mask"],
+            coverage_mask=quality["coverage_mask"],
+            clutter_mask=quality["clutter_mask"],
+            interpolation_weight=quality["interpolation_weight"],
+        )
         input_data = result["input"]
         forecast_data = result["forecast"]
         diagnostics = result["diagnostics"]
+        forecast_quality = result["forecast_quality_masks"]
         reflectivity_diagnostics = summarize_forecast(forecast_data * MAX_DBZ)
         if reflectivity_diagnostics["uniform_field_anomaly"]:
             return jsonify({
@@ -423,13 +501,16 @@ def predict():
         forecast = _encode_images(sequence_images[RUNTIME.input_length:], forecast_labels)
 
         layers: Dict[str, List[Dict]] = {"reflectivity": forecast}
-        rendered_diagnostics = render_evolution_layers(diagnostics, lead_times, range_km)
-        for name, images in rendered_diagnostics.items():
-            labels = [f"{name} · T+{lead_times[index]} мин" for index in range(len(images))]
+        rendered = render_evolution_layers(diagnostics, lead_times, range_km)
+        rendered.update(render_quality_layers(forecast_quality, lead_times, range_km))
+        for name, images in rendered.items():
+            title = LAYER_LABELS.get(name, name)
+            labels = [f"{title} · T+{lead_times[index]} мин" for index in range(len(images))]
             layers[name] = _encode_images(images, labels)
 
         LAST_FORECAST = {
             "data": forecast_data * MAX_DBZ,
+            "quality_masks": forecast_quality,
             "base_time": last_time,
             "station": station_code,
             "source": source_type,
@@ -457,6 +538,7 @@ def predict():
             "confidence_by_lead": _confidence_by_lead(lead_times),
             "diagnostics": reflectivity_diagnostics,
             "evolution_diagnostics": _evolution_summary(diagnostics),
+            "quality_diagnostics": _quality_summary(forecast_quality),
             "warnings": warnings,
         })
     except Exception as exc:
@@ -582,6 +664,7 @@ def export_netcdf():
         station = LAST_FORECAST.get("station", "unknown")
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         file_path = os.path.join(export_dir, f"forecast_{station}_{timestamp}.nc")
+        quality = LAST_FORECAST.get("quality_masks", {})
         save_forecast_to_netcdf(
             forecast_data=LAST_FORECAST["data"],
             base_time=LAST_FORECAST["base_time"],
@@ -595,6 +678,10 @@ def export_netcdf():
             pipeline_version=LAST_FORECAST.get("pipeline_version", "legacy"),
             interval_minutes=LAST_FORECAST.get("forecast_step_minutes", RUNTIME.forecast_step_minutes),
             grid_resolution=float(RUNTIME.grid.get("resolution_m", 1000.0)),
+            valid_mask=quality.get("valid_mask"),
+            coverage_mask=quality.get("coverage_mask"),
+            clutter_mask=quality.get("clutter_mask"),
+            interpolation_weight=quality.get("interpolation_weight"),
         )
         from flask import send_file
         return send_file(os.path.abspath(file_path), as_attachment=True)
