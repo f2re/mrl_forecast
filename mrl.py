@@ -36,7 +36,6 @@ def build_parser() -> argparse.ArgumentParser:
     sources = commands.add_parser("sources", help="Проверить discovery и visual-only источники")
     sources.add_argument("--source", choices=("all", "wis2", "meteoinfo", "rainviewer"), default="all")
     sources.add_argument("--limit", type=int, default=100)
-    sources.add_argument("--download-meteoinfo")
 
     download = commands.add_parser("download", help="Скачать открытый радарный архив")
     download.add_argument("--source", choices=("noaa", "dwd"), default="noaa")
@@ -108,10 +107,10 @@ def main() -> int:
         return _run("scripts/doctor.py", command)
 
     if args.command == "sources":
-        command = ["--source", args.source, "--limit", args.limit]
-        if args.download_meteoinfo:
-            command.extend(["--download-meteoinfo", args.download_meteoinfo])
-        return _run("scripts/check_open_radar_sources.py", command)
+        return _run(
+            "scripts/check_open_radar_sources.py",
+            ["--source", args.source, "--limit", args.limit],
+        )
 
     if args.command == "download":
         script = "src/download_archive.py" if args.source == "noaa" else "src/download_dwd_archive.py"
