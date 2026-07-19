@@ -25,13 +25,13 @@ python3 scripts/job_worker.py &
 WORKER_PID=$!
 
 echo "Фоновая проверка активных источников..."
-mkdir -p data
+mkdir -p data src/static
 python3 scripts/source_access.py \
     --action probe \
     --source all \
     --active-only \
     --limit 1 \
-    --report-path data/source_health.json \
+    --report-path src/static/source_health.json \
     > data/source_health.log 2>&1 &
 PROBE_PID=$!
 
