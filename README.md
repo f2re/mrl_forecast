@@ -27,7 +27,8 @@
 - **SQLite job runner**: скачивание, подготовка датасета и обучение запускаются из UI или терминала.
 - **Адаптивный интерфейс** в визуальном языке macOS/iOS с тёмной темой и мобильной навигацией.
 - **Открытые источники**:
-  - NOAA AWS — количественный референсный источник;
+  - NOAA AWS — количественный референсный источник NEXRAD Level II;
+  - DWD Open Data — количественные DBZH-срезы ODIM HDF5, преобразуемые тем же canonical pipeline;
   - WIS2 — discovery открытых машинно-читаемых наборов;
   - Meteoinfo и RainViewer — визуальные источники, не используемые как количественный `dBZ`.
 - **NetCDF export** с CRS, `lead_time_minutes`, `valid_time_utc`, provenance и `not_official_warning=true`.
@@ -50,12 +51,14 @@ mrl_forecast/
 │   ├── job_worker.py
 │   ├── doctor.py
 │   ├── check_aws_source.py
+│   ├── check_dwd_source.py
 │   └── check_open_radar_sources.py
 ├── src/
 │   ├── radar_contract.py
 │   ├── radar_pipeline.py
 │   ├── source_registry.py
 │   ├── open_sources.py
+│   ├── dwd_source.py
 │   ├── datasets.py
 │   ├── event_catalog.py
 │   ├── convlstm.py
@@ -87,10 +90,15 @@ bash scripts/run_app.sh
 
 ```bash
 python scripts/doctor.py
+python scripts/doctor.py --check-dwd --dwd-station ess
 python scripts/check_aws_source.py --station KOKX --date 2024-05-20 --decode-one
+python scripts/check_dwd_source.py --station ess --list-stations
+python scripts/check_dwd_source.py --station ess --decode-one
 python scripts/check_open_radar_sources.py --source all
 python scripts/check_open_radar_sources.py --source wis2 --limit 100
 ```
+
+Перед включением DWD-станции в обучение требуется успешный `--decode-one` на целевой машине. Проверка подтверждает доступность HDF5, декодирование ODIM, форму canonical grid и provenance.
 
 ## Терминальный цикл
 
@@ -147,6 +155,7 @@ python src/run_inference.py \
 - Модель со статусом `training`, `failed` или `rejected_quality_gate` нельзя выбирать для рабочего инференса.
 - Горизонты более 60 минут по одной отражаемости имеют пониженную экспериментальную достоверность.
 - Визуальные растровые источники не используются для количественного обучения без доказанной шкалы и provenance.
+- DWD-адаптер использует количественные ODIM HDF5, но каждая новая станция и версия продукта должна пройти `--decode-one` и проверку QC перед обучением.
 - До обучения на российских ДМРЛ необходимы реальные открытые fixtures и отдельная верификация BUFR-дескрипторов.
 
 ## Лицензия
