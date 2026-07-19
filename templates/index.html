@@ -6,6 +6,7 @@
     <title>MRL Forecast</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
     <script defer src="{{ url_for('static', filename='app.js') }}"></script>
+    <script defer src="{{ url_for('static', filename='source-health.js') }}"></script>
 </head>
 <body>
 <div class="app">
@@ -82,8 +83,17 @@
         </section>
 
         <section class="pane" id="pane-sources">
-            <div class="section-title"><div><h2>Реестр источников</h2><p>Статус пригодности задаётся явно</p></div></div>
+            <div class="section-title"><div><h2>Реестр источников</h2><p>Семантика данных, доступ и пригодность задаются явно</p></div></div>
             <div class="grid cols-3" id="sourcesGrid"></div>
+
+            <div class="section-title">
+                <div><h2>Автопроверка доступа</h2><p>Проверяется каталог и возможность прочитать тестовый файл без сохранения секрета в браузере</p></div>
+                <button class="button mini" id="sourceHealthRefresh">Обновить отчёт</button>
+            </div>
+            <div class="card"><div class="card-body"><div class="list" id="sourceHealthList"></div></div></div>
+
+            <div class="section-title"><div><h2>Регистрация и токены</h2><p>Секреты вводятся только в терминале и хранятся вне репозитория</p></div></div>
+            <div class="card"><div class="card-body"><div class="list" id="sourceAccessList"></div></div></div>
         </section>
 
         <section class="pane" id="pane-data">
