@@ -9,26 +9,28 @@ from typing import Any, Callable, Dict, Iterator, List, Optional
 import numpy as np
 
 from config import FORECAST_STEP_MINUTES
+from radar_contract import CanonicalGridSpec, CanonicalRadarFrame
 
 PIPELINE_VERSION = "radar-grid-v2-15min"
+CANONICAL_PIPELINE_VERSION = "radar-grid-v3-1km"
 PRODUCT = "lowest_elevation_reflectivity"
+CANONICAL_PRODUCT = "gridded_reflectivity"
 UNITS = "dBZ"
 
 
 class RadarError(RuntimeError):
-    """Base error for radar ingestion and preprocessing."""
+    pass
 
 
 class RadarSourceError(RadarError):
-    """Raised when an upstream radar source cannot provide observations."""
+    pass
 
 
 class RadarDecodeError(RadarError):
-    """Raised when a radar file cannot be decoded into reflectivity."""
+    pass
 
 
 def ensure_utc(value: datetime.datetime) -> datetime.datetime:
-    """Return an aware UTC datetime."""
     if value.tzinfo is None:
         return value.replace(tzinfo=datetime.UTC)
     return value.astimezone(datetime.UTC)
@@ -36,7 +38,7 @@ def ensure_utc(value: datetime.datetime) -> datetime.datetime:
 
 @dataclass(frozen=True)
 class RadarPipelineConfig:
-    """Versioned grid contract shared by training and inference."""
+    """Versioned Py-ART grid contract."""
 
     width: int = 256
     height: int = 256
@@ -47,6 +49,21 @@ class RadarPipelineConfig:
     pipeline_version: str = PIPELINE_VERSION
     product: str = PRODUCT
     units: str = UNITS
+
+    def __post_init__(self) -> None:
+        if self.width <= 0 or self.height <= 0 or self.radius_km <= 0:
+            raise ValueError("Radar grid dimensions and radius must be positive")
+
+    @classmethod
+    def canonical(cls, time_step_minutes: int = FORECAST_STEP_MINUTES) -> "RadarPipelineConfig":
+        return cls(
+            width=512,
+            height=512,
+            radius_km=256.0,
+            time_step_minutes=time_step_minutes,
+            pipeline_version=CANONICAL_PIPELINE_VERSION,
+            product=CANONICAL_PRODUCT,
+        )
 
     @property
     def grid_shape(self) -> tuple[int, int, int]:
@@ -61,18 +78,21 @@ class RadarPipelineConfig:
             (-radius_m, radius_m),
         )
 
+    def to_grid_spec(self) -> CanonicalGridSpec:
+        resolution_m = 2.0 * self.radius_km * 1000.0 / max(self.width, self.height)
+        return CanonicalGridSpec(
+            width=self.width,
+            height=self.height,
+            resolution_m=resolution_m,
+        )
+
     def to_metadata(self) -> Dict[str, Any]:
         return {
             "pipeline_version": self.pipeline_version,
             "product": self.product,
             "units": self.units,
             "time_step_minutes": self.time_step_minutes,
-            "grid": {
-                "width": self.width,
-                "height": self.height,
-                "radius_km": self.radius_km,
-                "crs": "local_aeqd",
-            },
+            "grid": self.to_grid_spec().to_metadata(),
             "weighting_function": self.weighting_function,
         }
 
@@ -92,14 +112,17 @@ class RadarFrame:
     provenance: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        self.data = np.asarray(self.data, dtype=np.float32)
+        self.valid_mask = np.asarray(self.valid_mask, dtype=bool)
+        if self.data.shape != self.valid_mask.shape:
+            raise ValueError("RadarFrame data and valid_mask must have the same shape")
         self.timestamp_utc = ensure_utc(self.timestamp_utc)
         self.station = self.station.upper()
+        self.source = self.source.lower()
 
 
 @dataclass
 class RadarSequence:
-    """A sequence of radar frames returned by adapters."""
-
     frames: List[RadarFrame]
     source: str
     status: str = "observed"
@@ -114,18 +137,17 @@ class RadarSequence:
         return sum(frame.status == "observed" for frame in self.frames)
 
     def stack(self, require_observed: bool = False) -> np.ndarray:
+        if not self.frames:
+            raise RadarSourceError("Radar sequence is empty")
         if require_observed:
             invalid = [frame.status for frame in self.frames if frame.status != "observed"]
             if invalid:
                 raise RadarSourceError(
                     f"Operational sequence contains non-observed frames: {', '.join(invalid)}"
                 )
-        if not self.frames:
-            raise RadarSourceError("Radar sequence is empty")
         return np.stack([frame.data for frame in self.frames], axis=0)
 
     def __iter__(self) -> Iterator[Any]:
-        """Preserve tuple unpacking for existing callers during migration."""
         yield self.stack(require_observed=self.status == "observed")
         yield self.timestamps
         yield self.message
@@ -144,6 +166,10 @@ class RadarPipeline:
         self._radar_reader = radar_reader
         self._grid_mapper = grid_mapper
 
+    @classmethod
+    def canonical(cls, **kwargs: Any) -> "RadarPipeline":
+        return cls(config=RadarPipelineConfig.canonical(), **kwargs)
+
     def metadata(self) -> Dict[str, Any]:
         return self.config.to_metadata()
 
@@ -156,8 +182,7 @@ class RadarPipeline:
         source: str,
     ) -> RadarFrame:
         try:
-            reader = self._radar_reader or self._default_reader
-            radar = reader(path)
+            radar = (self._radar_reader or self._default_reader)(path)
             return self.process_radar(
                 radar,
                 timestamp_utc=timestamp_utc,
@@ -170,6 +195,9 @@ class RadarPipeline:
         except Exception as exc:
             raise RadarDecodeError(f"Failed to decode {path}: {exc}") from exc
 
+    def process_file_canonical(self, path: str, **kwargs: Any) -> CanonicalRadarFrame:
+        return self.to_canonical(self.process_file(path, **kwargs))
+
     def process_radar(
         self,
         radar: Any,
@@ -181,8 +209,7 @@ class RadarPipeline:
     ) -> RadarFrame:
         field_name = self._reflectivity_field(radar)
         try:
-            mapper = self._grid_mapper or self._default_mapper
-            grid = mapper(
+            grid = (self._grid_mapper or self._default_mapper)(
                 (radar,),
                 grid_shape=self.config.grid_shape,
                 grid_limits=self.config.grid_limits,
@@ -235,6 +262,9 @@ class RadarPipeline:
             provenance=provenance or {},
         )
 
+    def to_canonical(self, frame: RadarFrame) -> CanonicalRadarFrame:
+        return CanonicalRadarFrame.from_radar_frame(frame, self.config.to_grid_spec())
+
     @staticmethod
     def _reflectivity_field(radar: Any) -> str:
         if "reflectivity" in radar.fields:
@@ -247,13 +277,11 @@ class RadarPipeline:
     @staticmethod
     def _default_reader(path: str) -> Any:
         import pyart
-
         return pyart.io.read(path)
 
     @staticmethod
     def _default_mapper(*args: Any, **kwargs: Any) -> Any:
         import pyart
-
         return pyart.map.grid_from_radars(*args, **kwargs)
 
 
@@ -267,7 +295,9 @@ class DemoRadarAdapter:
         now = datetime.datetime.now(datetime.UTC)
         frames = []
         for index in range(seq_length):
-            timestamp = now - datetime.timedelta(minutes=(seq_length - index - 1) * FORECAST_STEP_MINUTES)
+            timestamp = now - datetime.timedelta(
+                minutes=(seq_length - index - 1) * FORECAST_STEP_MINUTES
+            )
             frames.append(
                 RadarFrame(
                     data=self._generate_grid(f"demo_{index}"),
