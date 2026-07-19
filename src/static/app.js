@@ -14,8 +14,15 @@ const panes = {
 };
 
 const layerTitles = {
-    reflectivity: 'Поле отражаемости', motion: 'Перенос радиоэха',
-    growth: 'Рост радиоэха', decay: 'Распад радиоэха', uncertainty: 'Неопределённость'
+    reflectivity: 'Поле отражаемости',
+    motion: 'Перенос радиоэха',
+    growth: 'Рост радиоэха',
+    decay: 'Распад радиоэха',
+    uncertainty: 'Неопределённость',
+    valid_mask: 'Валидная область',
+    coverage_mask: 'Геометрическое покрытие',
+    clutter_mask: 'Исключённые помехи',
+    interpolation_weight: 'Вес интерполяции'
 };
 
 const byId = id => document.getElementById(id);
@@ -371,8 +378,10 @@ function selectLayer(name) {
 }
 
 function populateLayers() {
-    const names = ['reflectivity', 'motion', 'growth', 'decay', 'uncertainty']
-        .filter(name => (state.layers[name] || []).length);
+    const names = [
+        'reflectivity', 'motion', 'growth', 'decay', 'uncertainty',
+        'valid_mask', 'coverage_mask', 'clutter_mask', 'interpolation_weight'
+    ].filter(name => (state.layers[name] || []).length);
     layerSelect.innerHTML = names.map(name => `<option value="${name}">${escapeHtml(layerTitles[name] || name)}</option>`).join('');
     layerSelect.disabled = !names.length;
     selectLayer(names.includes('reflectivity') ? 'reflectivity' : names[0]);
@@ -397,12 +406,15 @@ byId('forecastForm').onsubmit = async event => {
         populateLayers();
         exportBtn.disabled = false;
         const evolution = data.evolution_diagnostics || {};
+        const quality = data.quality_diagnostics || {};
         diagnostics.innerHTML = `
             <span class="badge info">${escapeHtml(data.model_architecture)}</span>
             <span class="badge">${escapeHtml(data.pipeline_version)}</span>
             <span class="badge">${data.grid?.width || '—'}×${data.grid?.height || '—'}</span>
             <span class="badge">max ${Number(data.diagnostics.max_dbz).toFixed(1)} dBZ</span>
             ${evolution.mean_motion_pixels != null ? `<span class="badge">motion ${Number(evolution.mean_motion_pixels).toFixed(2)} px</span>` : ''}
+            ${quality.valid_fraction != null ? `<span class="badge">valid ${(100 * Number(quality.valid_fraction)).toFixed(1)}%</span>` : ''}
+            ${quality.clutter_fraction != null && Number(quality.clutter_fraction) > 0 ? `<span class="badge warn">clutter ${(100 * Number(quality.clutter_fraction)).toFixed(2)}%</span>` : ''}
             <span class="badge warn">экспериментальный продукт</span>`;
     } catch (error) { toast(error.message, true); }
 };
