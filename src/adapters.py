@@ -131,16 +131,34 @@ class LocalDirectoryAdapter(BaseRadarAdapter):
             if values.ndim != 3:
                 raise RadarDecodeError(f"Expected [T,H,W] in {path.name}, got {values.shape}")
 
-            if "valid_mask" in payload:
-                masks = np.asarray(payload["valid_mask"], dtype=bool)
-                if masks.ndim == 2:
-                    masks = masks[np.newaxis, ...]
-            else:
-                masks = np.isfinite(values)
-            if masks.shape != values.shape:
-                raise RadarDecodeError(
-                    f"valid_mask shape {masks.shape} does not match reflectivity {values.shape}"
-                )
+            valid = self._sequence_quality_array(
+                payload,
+                "valid_mask",
+                np.isfinite(values),
+                values.shape,
+                bool,
+            )
+            coverage = self._sequence_quality_array(
+                payload,
+                "coverage_mask",
+                np.ones_like(valid),
+                values.shape,
+                bool,
+            )
+            clutter = self._sequence_quality_array(
+                payload,
+                "clutter_mask",
+                np.zeros_like(valid),
+                values.shape,
+                bool,
+            )
+            weights = self._sequence_quality_array(
+                payload,
+                "interpolation_weight",
+                valid.astype(np.float32),
+                values.shape,
+                np.float32,
+            )
 
             if "timestamps_utc" in payload:
                 raw_timestamps = list(payload["timestamps_utc"])
@@ -155,9 +173,29 @@ class LocalDirectoryAdapter(BaseRadarAdapter):
                 )
 
             return [
-                self._frame_from_array(values[index], timestamps[index], path, masks[index], index)
+                self._frame_from_array(
+                    values[index],
+                    timestamps[index],
+                    path,
+                    valid_mask=valid[index],
+                    coverage_mask=coverage[index],
+                    clutter_mask=clutter[index],
+                    interpolation_weight=weights[index],
+                    sequence_index=index,
+                )
                 for index in range(values.shape[0])
             ]
+
+    @staticmethod
+    def _sequence_quality_array(payload, name, default, expected_shape, dtype):
+        array = np.asarray(payload[name] if name in payload else default, dtype=dtype)
+        if array.ndim == 2:
+            array = array[np.newaxis, ...]
+        if array.shape != expected_shape:
+            raise RadarDecodeError(
+                f"{name} shape {array.shape} does not match reflectivity {expected_shape}"
+            )
+        return array
 
     def _frame_from_array(
         self,
@@ -165,6 +203,9 @@ class LocalDirectoryAdapter(BaseRadarAdapter):
         timestamp: datetime.datetime,
         path: pathlib.Path,
         valid_mask: Optional[np.ndarray] = None,
+        coverage_mask: Optional[np.ndarray] = None,
+        clutter_mask: Optional[np.ndarray] = None,
+        interpolation_weight: Optional[np.ndarray] = None,
         sequence_index: Optional[int] = None,
     ) -> RadarFrame:
         values = np.asarray(grid, dtype=np.float32)
@@ -173,10 +214,10 @@ class LocalDirectoryAdapter(BaseRadarAdapter):
             raise RadarDecodeError(
                 f"Grid {values.shape} in {path.name} is incompatible with pipeline {expected}"
             )
-        mask = np.isfinite(values) if valid_mask is None else np.asarray(valid_mask, dtype=bool)
-        if mask.shape != values.shape:
+        valid = np.isfinite(values) if valid_mask is None else np.asarray(valid_mask, dtype=bool)
+        if valid.shape != values.shape:
             raise RadarDecodeError("Local valid_mask does not match grid shape")
-        masked_grid = np.ma.array(values, mask=~mask)
+        masked_grid = np.ma.array(values, mask=~valid)
         provenance = {"path": str(path)}
         if sequence_index is not None:
             provenance["sequence_index"] = sequence_index
@@ -186,6 +227,9 @@ class LocalDirectoryAdapter(BaseRadarAdapter):
             station="LOCAL",
             source="local",
             provenance=provenance,
+            coverage_mask=coverage_mask,
+            clutter_mask=clutter_mask,
+            interpolation_weight=interpolation_weight,
         )
 
     @staticmethod
