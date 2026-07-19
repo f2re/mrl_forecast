@@ -24,12 +24,13 @@ echo "Запуск job worker..."
 python3 scripts/job_worker.py &
 WORKER_PID=$!
 
-echo "Фоновая проверка активных источников..."
+echo "Фоновая проверка активных источников и тестового чтения файлов..."
 mkdir -p data src/static
 python3 scripts/source_access.py \
     --action probe \
     --source all \
     --active-only \
+    --download-test \
     --limit 1 \
     --report-path src/static/source_health.json \
     > data/source_health.log 2>&1 &
