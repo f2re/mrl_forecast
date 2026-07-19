@@ -18,6 +18,10 @@ class CanonicalGridSpec:
     resolution_m: float = 1000.0
     crs: str = "local_aeqd"
 
+    def __post_init__(self) -> None:
+        if self.width <= 0 or self.height <= 0 or self.resolution_m <= 0:
+            raise ValueError("Canonical grid dimensions and resolution must be positive")
+
     @property
     def shape(self) -> tuple[int, int]:
         return (self.height, self.width)
@@ -91,6 +95,8 @@ class CanonicalRadarFrame:
             raise ValueError("reflectivity_dbz and valid_mask must have the same shape")
         if values.ndim != 2:
             raise ValueError("CanonicalRadarFrame expects a 2D grid")
+        if values.shape != self.grid.shape:
+            raise ValueError(f"Frame shape {values.shape} does not match grid {self.grid.shape}")
 
         coverage = valid.copy() if self.coverage_mask is None else np.asarray(self.coverage_mask, dtype=bool)
         clutter = np.zeros_like(valid) if self.clutter_mask is None else np.asarray(self.clutter_mask, dtype=bool)
@@ -120,6 +126,22 @@ class CanonicalRadarFrame:
         self.timestamp_utc = timestamp
         self.station_id = self.station_id.upper()
         self.source_id = self.source_id.lower()
+
+    @classmethod
+    def from_radar_frame(cls, frame: Any, grid: CanonicalGridSpec) -> "CanonicalRadarFrame":
+        """Convert the current pipeline RadarFrame without losing provenance."""
+
+        return cls(
+            reflectivity_dbz=frame.data,
+            valid_mask=frame.valid_mask,
+            timestamp_utc=frame.timestamp_utc,
+            station_id=frame.station,
+            source_id=frame.source,
+            product_id=frame.product,
+            grid=grid,
+            qc=dict(frame.qc),
+            provenance=dict(frame.provenance),
+        )
 
     def to_model_arrays(self, fill_value: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
         """Return reflectivity and mask arrays suitable for model input."""
