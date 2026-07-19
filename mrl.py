@@ -33,9 +33,25 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--dwd-station", default="ess")
     doctor.add_argument("--date", default="2024-05-20")
 
-    sources = commands.add_parser("sources", help="Проверить discovery и visual-only источники")
-    sources.add_argument("--source", choices=("all", "wis2", "meteoinfo", "rainviewer"), default="all")
-    sources.add_argument("--limit", type=int, default=100)
+    sources = commands.add_parser(
+        "sources",
+        help="Показать, настроить и проверить международные радарные источники",
+    )
+    sources.add_argument(
+        "--action",
+        choices=("list", "info", "probe", "configure", "sample"),
+        default="probe",
+    )
+    sources.add_argument("--source", default="all")
+    sources.add_argument("--download-test", action="store_true")
+    sources.add_argument("--output-dir", default="data/source_samples")
+    sources.add_argument("--limit", type=int, default=5)
+    sources.add_argument("--prefix", default="")
+    sources.add_argument("--station", default="")
+    sources.add_argument("--collection", default="volume")
+    sources.add_argument("--date", default="")
+    sources.add_argument("--dataset-name", default="radar_volume_full_herwijnen")
+    sources.add_argument("--dataset-version", default="1.0")
 
     download = commands.add_parser("download", help="Скачать открытый радарный архив")
     download.add_argument("--source", choices=("noaa", "dwd"), default="noaa")
@@ -107,10 +123,21 @@ def main() -> int:
         return _run("scripts/doctor.py", command)
 
     if args.command == "sources":
-        return _run(
-            "scripts/check_open_radar_sources.py",
-            ["--source", args.source, "--limit", args.limit],
-        )
+        command = [
+            "--action", args.action,
+            "--source", args.source,
+            "--output-dir", args.output_dir,
+            "--limit", args.limit,
+            "--prefix", args.prefix,
+            "--station", args.station,
+            "--collection", args.collection,
+            "--date", args.date,
+            "--dataset-name", args.dataset_name,
+            "--dataset-version", args.dataset_version,
+        ]
+        if args.download_test:
+            command.append("--download-test")
+        return _run("scripts/source_access.py", command)
 
     if args.command == "download":
         script = "src/download_archive.py" if args.source == "noaa" else "src/download_dwd_archive.py"
