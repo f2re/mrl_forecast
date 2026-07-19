@@ -23,7 +23,19 @@ echo "Порт: $PORT"
 echo "Запуск job worker..."
 python3 scripts/job_worker.py &
 WORKER_PID=$!
-trap 'kill "$WORKER_PID" 2>/dev/null || true' EXIT INT TERM
+
+echo "Фоновая проверка активных источников..."
+mkdir -p data
+python3 scripts/source_access.py \
+    --action probe \
+    --source all \
+    --active-only \
+    --limit 1 \
+    --report-path data/source_health.json \
+    > data/source_health.log 2>&1 &
+PROBE_PID=$!
+
+trap 'kill "$WORKER_PID" "$PROBE_PID" 2>/dev/null || true' EXIT INT TERM
 
 echo "Запуск веб-приложения..."
 python3 src/web_app.py
