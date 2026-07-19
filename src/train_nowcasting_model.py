@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 import traceback
 from datetime import datetime
@@ -17,8 +18,15 @@ import torch
 from torch.utils.data import ConcatDataset, DataLoader, Subset, WeightedRandomSampler
 
 from convlstm import ConvLSTM, ConvLSTMCell
-from datasets import RadarSequenceDataset, balanced_sample_weights
-from forecast_quality import advection_forecast, is_uniform_forecast, threshold_metrics_by_lead_time
+from datasets import RadarSequenceDataset, balanced_sample_weights, sample_groups_for_dataset
+from forecast_quality import (
+    advection_forecast,
+    block_motion_forecast,
+    fractions_skill_score_by_lead_time,
+    is_uniform_forecast,
+    spatial_metrics_by_lead_time,
+    threshold_metrics_by_lead_time,
+)
 from losses import MaskedMSELoss, PhysicsEvolutionLoss, masked_mse
 from metadata_utils import load_metadata, save_metadata
 from phys_evolution import MRLPhysEvolution
@@ -41,19 +49,67 @@ def temporal_split_indices(sample_count: int, overlap_frames: int, val_fraction:
     return train_indices, validation_indices
 
 
+def grouped_temporal_split_indices(
+    groups: list[str],
+    val_fraction: float,
+    purge_groups: int = 1,
+):
+    """Split complete chronological blocks and remove adjacent boundary blocks."""
+
+    if not 0.0 < val_fraction < 1.0:
+        raise ValueError("val_fraction must be between 0 and 1")
+    ordered_groups = list(dict.fromkeys(groups))
+    validation_count = max(1, int(math.ceil(len(ordered_groups) * val_fraction)))
+    boundary = len(ordered_groups) - validation_count
+    train_stop = boundary - max(0, int(purge_groups))
+    if train_stop < 1 or boundary >= len(ordered_groups):
+        raise ValueError("Not enough chronological groups for a purged split")
+
+    train_groups = set(ordered_groups[:train_stop])
+    validation_groups = set(ordered_groups[boundary:])
+    train_indices = [index for index, group in enumerate(groups) if group in train_groups]
+    validation_indices = [index for index, group in enumerate(groups) if group in validation_groups]
+    if not train_indices or not validation_indices:
+        raise ValueError("Grouped split produced an empty partition")
+    return train_indices, validation_indices
+
+
 def build_temporal_datasets(datasets, val_fraction):
     train_parts = []
     validation_parts = []
+    split_report = []
     for dataset in datasets:
-        overlap = dataset.input_length + dataset.target_length - 1
-        train_indices, validation_indices = temporal_split_indices(
-            len(dataset),
-            overlap,
-            val_fraction,
-        )
+        groups = sample_groups_for_dataset(dataset)
+        unique_groups = list(dict.fromkeys(groups))
+        strategy = "purged_time_blocks"
+        try:
+            if len(unique_groups) < 3:
+                raise ValueError("too few groups")
+            train_indices, validation_indices = grouped_temporal_split_indices(
+                groups,
+                val_fraction,
+                purge_groups=1,
+            )
+        except ValueError:
+            strategy = "window_overlap_gap"
+            overlap = dataset.input_length + dataset.target_length - 1
+            train_indices, validation_indices = temporal_split_indices(
+                len(dataset),
+                overlap,
+                val_fraction,
+            )
         train_parts.append(Subset(dataset, train_indices))
         validation_parts.append(Subset(dataset, validation_indices))
-    return ConcatDataset(train_parts), ConcatDataset(validation_parts)
+        split_report.append(
+            {
+                "dataset": dataset.data_dir.name,
+                "strategy": strategy,
+                "group_count": len(unique_groups),
+                "train_samples": len(train_indices),
+                "validation_samples": len(validation_indices),
+            }
+        )
+    return ConcatDataset(train_parts), ConcatDataset(validation_parts), split_report
 
 
 def _forward_model(model, x, x_mask, architecture):
@@ -92,11 +148,13 @@ def validate_epoch(model, dataloader, criterion, device, architecture):
 
 
 def quality_gate_passes(metrics: Dict[str, float]) -> bool:
-    return (
-        metrics["model_mse"] < metrics["persistence_mse"]
-        and metrics["model_mse"] < metrics.get("advection_mse", float("inf"))
-        and not metrics["uniform_field_anomaly"]
-    )
+    model_mse = metrics["model_mse"]
+    baselines = [
+        metrics["persistence_mse"],
+        metrics.get("advection_mse", float("inf")),
+        metrics.get("block_motion_mse", float("inf")),
+    ]
+    return all(model_mse < baseline for baseline in baselines) and not metrics["uniform_field_anomaly"]
 
 
 def _masked_numpy_mse(prediction, target, valid_mask):
@@ -107,12 +165,13 @@ def _masked_numpy_mse(prediction, target, valid_mask):
 
 
 def evaluate_model_quality(model, dataloader, device, architecture):
-    """Compare model, persistence and global advection on valid pixels."""
+    """Compare model, persistence, global shift and local block motion."""
 
     model.eval()
     model_losses = []
     persistence_losses = []
     advection_losses = []
+    block_motion_losses = []
     forecasts = []
     targets = []
     masks = []
@@ -137,37 +196,64 @@ def evaluate_model_quality(model, dataloader, device, architecture):
                 diagnostic_values["decay_proxy"].append(diagnostics["decay"].mean().item())
                 diagnostic_values["uncertainty"].append(diagnostics["uncertainty"].mean().item())
 
-            for history, forecast, target, target_mask in zip(
+            for history, history_mask, forecast, target, target_mask in zip(
                 x.cpu().numpy(),
+                x_mask.cpu().numpy().astype(bool),
                 prediction.cpu().numpy(),
                 y.cpu().numpy(),
                 y_mask.cpu().numpy().astype(bool),
             ):
                 valid = target_mask[:, 0]
                 forecast_dbz = forecast[:, 0] * MAX_DBZ
+                history_dbz = history[:, 0] * MAX_DBZ
+                history_valid = history_mask[:, 0]
                 uniform_anomaly = uniform_anomaly or is_uniform_forecast(
                     np.where(valid, forecast_dbz, 0.0)
                 )
                 advection = advection_forecast(
-                    history[:, 0] * MAX_DBZ,
+                    history_dbz,
                     forecast.shape[0],
                 ) / MAX_DBZ
+                block_motion = block_motion_forecast(
+                    history_dbz,
+                    forecast.shape[0],
+                    valid_mask=history_valid,
+                ) / MAX_DBZ
                 advection_loss = _masked_numpy_mse(advection, target[:, 0], valid)
+                block_motion_loss = _masked_numpy_mse(block_motion, target[:, 0], valid)
                 if advection_loss is not None:
                     advection_losses.append(advection_loss)
+                if block_motion_loss is not None:
+                    block_motion_losses.append(block_motion_loss)
                 forecasts.append(forecast_dbz)
                 targets.append(target[:, 0] * MAX_DBZ)
                 masks.append(valid)
 
+    forecast_array = np.stack(forecasts)
+    target_array = np.stack(targets)
+    mask_array = np.stack(masks)
     metrics = {
         "model_mse": float(np.mean(model_losses)),
         "persistence_mse": float(np.mean(persistence_losses)),
         "advection_mse": float(np.mean(advection_losses)) if advection_losses else float("inf"),
+        "block_motion_mse": (
+            float(np.mean(block_motion_losses)) if block_motion_losses else float("inf")
+        ),
         "uniform_field_anomaly": bool(uniform_anomaly),
         "threshold_metrics": threshold_metrics_by_lead_time(
-            np.stack(forecasts),
-            np.stack(targets),
-            valid_mask=np.stack(masks),
+            forecast_array,
+            target_array,
+            valid_mask=mask_array,
+        ),
+        "fractions_skill_score": fractions_skill_score_by_lead_time(
+            forecast_array,
+            target_array,
+            valid_mask=mask_array,
+        ),
+        "spatial_metrics": spatial_metrics_by_lead_time(
+            forecast_array,
+            target_array,
+            valid_mask=mask_array,
         ),
     }
     if architecture == "phys-evolution":
@@ -230,6 +316,7 @@ def _load_datasets(data_dirs, input_length, target_length):
                 "time_step_minutes": pipeline.get("time_step_minutes"),
                 "sample_format": metadata.get("sample_format", "legacy-npy"),
                 "class_counts": metadata.get("class_counts", {}),
+                "split_group_count": metadata.get("split_group_count", 0),
             }
         )
         print(f"Loaded dataset from {data_dir} ({len(dataset)} samples)")
@@ -332,7 +419,9 @@ def main():
     model_grid = next(iter(grids.values()))
 
     try:
-        train_dataset, validation_dataset = build_temporal_datasets(datasets, args.val_split)
+        train_dataset, validation_dataset, split_report = build_temporal_datasets(
+            datasets, args.val_split
+        )
     except ValueError as exc:
         print(f"Error: {exc}")
         return
@@ -370,6 +459,7 @@ def main():
         "model_config": model_config,
         "loss": "physics_evolution" if args.architecture == "phys-evolution" else "masked_mse",
         "sampling": "dry_echo_50_50" if sampler is not None else "natural",
+        "split": split_report,
         "hyperparameters": vars(args),
         "training_data": provenance,
         "pipeline_version": pipeline_version,
@@ -399,7 +489,8 @@ def main():
             history["val_loss"].append(val_loss)
             print(
                 f"Epoch {epoch}/{args.epochs}: train={train_loss:.6f}, "
-                f"val={val_loss:.6f}, persistence={metrics['persistence_mse']:.6f}"
+                f"val={val_loss:.6f}, persistence={metrics['persistence_mse']:.6f}, "
+                f"block_motion={metrics['block_motion_mse']:.6f}"
             )
             save_history(model_dir, history)
             metadata["current_epoch"] = epoch
