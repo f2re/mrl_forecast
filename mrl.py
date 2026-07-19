@@ -44,6 +44,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sources.add_argument("--source", default="all")
     sources.add_argument("--download-test", action="store_true")
+    sources.add_argument("--active-only", action="store_true")
+    sources.add_argument("--max-workers", type=int, default=6)
+    sources.add_argument("--report-path", default="data/source_health.json")
+    sources.add_argument("--no-save-report", action="store_true")
     sources.add_argument("--output-dir", default="data/source_samples")
     sources.add_argument("--limit", type=int, default=5)
     sources.add_argument("--prefix", default="")
@@ -134,9 +138,15 @@ def main() -> int:
             "--date", args.date,
             "--dataset-name", args.dataset_name,
             "--dataset-version", args.dataset_version,
+            "--max-workers", args.max_workers,
+            "--report-path", args.report_path,
         ]
         if args.download_test:
             command.append("--download-test")
+        if args.active_only:
+            command.append("--active-only")
+        if args.no_save_report:
+            command.append("--no-save-report")
         return _run("scripts/source_access.py", command)
 
     if args.command == "download":
