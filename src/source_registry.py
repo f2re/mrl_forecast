@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Callable, Dict
 
@@ -92,12 +93,48 @@ class RadarSourceRegistry:
                 message=str(exc),
             ).to_metadata()
 
-    def probe_all(self, **kwargs: Any) -> list[dict[str, Any]]:
-        return [
-            self.probe(source_id, **kwargs)
+    def probe_all(
+        self,
+        *,
+        active_only: bool = False,
+        max_workers: int = 6,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        source_ids = [
+            source_id
             for source_id in self.source_ids()
             if self.capabilities(source_id).probe_supported
+            and (
+                not active_only
+                or self.capabilities(source_id).adapter_status == "active"
+            )
         ]
+        if not source_ids:
+            return []
+
+        reports: Dict[str, dict[str, Any]] = {}
+        with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(source_ids)))) as executor:
+            futures = {
+                executor.submit(self.probe, source_id, **kwargs): source_id
+                for source_id in source_ids
+            }
+            for future in as_completed(futures):
+                source_id = futures[future]
+                try:
+                    reports[source_id] = future.result()
+                except Exception as exc:
+                    reports[source_id] = SourceProbeResult(
+                        source_id=source_id,
+                        status="unavailable",
+                        reachable=False,
+                        can_list=False,
+                        can_download=False,
+                        credential_state=self.credentials.state(
+                            self.capabilities(source_id)
+                        ),
+                        message=str(exc),
+                    ).to_metadata()
+        return [reports[source_id] for source_id in source_ids]
 
 
 def build_default_source_registry(
