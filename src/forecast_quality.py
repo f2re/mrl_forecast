@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 from scipy.ndimage import shift
@@ -12,7 +12,7 @@ def persistence_forecast(history: np.ndarray, output_steps: int) -> np.ndarray:
     """Repeat the most recent observed frame for every forecast lead time."""
     if history.ndim < 3 or history.shape[0] == 0:
         raise ValueError("history must contain at least one radar frame")
-    return np.repeat(history[-1:,...], output_steps, axis=0)
+    return np.repeat(history[-1:, ...], output_steps, axis=0)
 
 
 def advection_forecast(
@@ -55,35 +55,48 @@ def threshold_metrics_by_lead_time(
     target: np.ndarray,
     *,
     thresholds=(5.0, 10.0, 20.0, 30.0),
-) -> Dict[str, list[Dict[str, float]]]:
-    """Calculate categorical precipitation metrics for each lead time."""
+    valid_mask: Optional[np.ndarray] = None,
+) -> Dict[str, list[Dict[str, Any]]]:
+    """Calculate categorical metrics for each lead time over valid pixels."""
     predicted = np.asarray(forecast)
     observed = np.asarray(target)
     if predicted.shape != observed.shape or predicted.ndim not in (3, 4):
-        raise ValueError("forecast and target must have shape [T, H, W] or [N, T, H, W]")
+        raise ValueError("forecast and target must have shape [T,H,W] or [N,T,H,W]")
     if predicted.ndim == 3:
         predicted = predicted[np.newaxis, ...]
         observed = observed[np.newaxis, ...]
+
+    if valid_mask is None:
+        valid = np.ones_like(observed, dtype=bool)
+    else:
+        valid = np.asarray(valid_mask, dtype=bool)
+        if valid.ndim == 3:
+            valid = valid[np.newaxis, ...]
+        if valid.shape != observed.shape:
+            raise ValueError("valid_mask must match forecast and target shape")
+
     report = {}
     for threshold in thresholds:
         lead_metrics = []
         for lead_time in range(predicted.shape[1]):
-            predicted_rain = predicted[:, lead_time] >= threshold
-            observed_rain = observed[:, lead_time] >= threshold
-            hits = int(np.sum(predicted_rain & observed_rain))
-            misses = int(np.sum(~predicted_rain & observed_rain))
-            false_alarms = int(np.sum(predicted_rain & ~observed_rain))
+            lead_valid = valid[:, lead_time]
+            predicted_echo = predicted[:, lead_time] >= threshold
+            observed_echo = observed[:, lead_time] >= threshold
+            hits = int(np.sum(predicted_echo & observed_echo & lead_valid))
+            misses = int(np.sum(~predicted_echo & observed_echo & lead_valid))
+            false_alarms = int(np.sum(predicted_echo & ~observed_echo & lead_valid))
             csi_denominator = hits + misses + false_alarms
             pod_denominator = hits + misses
             far_denominator = hits + false_alarms
             lead_metrics.append(
                 {
+                    "valid_pixels": int(np.sum(lead_valid)),
                     "hits": hits,
                     "misses": misses,
                     "false_alarms": false_alarms,
-                    "csi": hits / csi_denominator if csi_denominator else 1.0,
-                    "pod": hits / pod_denominator if pod_denominator else 1.0,
-                    "far": false_alarms / far_denominator if far_denominator else 0.0,
+                    "csi": hits / csi_denominator if csi_denominator else None,
+                    "pod": hits / pod_denominator if pod_denominator else None,
+                    "far": false_alarms / far_denominator if far_denominator else None,
                 }
             )
         report[str(float(threshold))] = lead_metrics
