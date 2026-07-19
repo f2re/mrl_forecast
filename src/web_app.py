@@ -5,6 +5,7 @@ import base64
 import datetime
 import os
 import pathlib
+import re
 import sys
 from typing import Dict, List, Optional
 
@@ -15,6 +16,7 @@ from flask import Flask, jsonify, render_template, request
 import torch
 import torch.nn as nn
 
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.append(str(pathlib.Path(__file__).parent))
 
 from adapters import DemoRadarAdapter, LocalDirectoryAdapter, NOAAAWSAdapter, NOAAFTPAdapter
@@ -22,19 +24,21 @@ from config import FORECAST_STEP_MINUTES, MAX_DBZ, PRODUCT_NAME
 from convlstm import ConvLSTM
 from export_utils import save_forecast_to_netcdf
 from forecast_quality import summarize_forecast
+from jobs import JobStore
 from map_visualization import RADAR_COORDS, generate_sequence_plots
 from metadata_utils import load_metadata, scan_inventory
 from radar_pipeline import CANONICAL_PIPELINE_VERSION, PIPELINE_VERSION, RadarPipeline
 from source_registry import build_default_source_registry
 
 app = Flask(__name__, template_folder="../templates")
-app.config["RAW_DATA_DIR"] = "data/raw/archive"
-app.config["DATASETS_DIR"] = "data/processed_archive"
-app.config["MODELS_REGISTRY_DIR"] = "models/registry"
-app.config["LOCAL_DATA_DIR"] = os.environ.get("RADAR_DATA_DIR", "data/processed")
+app.config["RAW_DATA_DIR"] = str(ROOT / "data" / "raw" / "archive")
+app.config["DATASETS_DIR"] = str(ROOT / "data" / "processed_archive")
+app.config["MODELS_REGISTRY_DIR"] = str(ROOT / "models" / "registry")
+app.config["LOCAL_DATA_DIR"] = os.environ.get("RADAR_DATA_DIR", str(ROOT / "data" / "processed"))
 
-CHECKPOINT_PATH = os.environ.get("NOWCAST_MODEL_CHECKPOINT", "models/checkpoints/best_model.pt")
+CHECKPOINT_PATH = os.environ.get("NOWCAST_MODEL_CHECKPOINT", str(ROOT / "models" / "checkpoints" / "best_model.pt"))
 SUPPORTED_PIPELINES = {PIPELINE_VERSION, CANONICAL_PIPELINE_VERSION}
+JOB_STORE = JobStore()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model: Optional[nn.Module] = None
@@ -104,20 +108,22 @@ def _load_model(checkpoint_path: str) -> None:
     global model, INPUT_LENGTH, TARGET_LENGTH, HIDDEN_CHANNELS
     global MODEL_STEP_MINUTES, MODEL_GRID, CURRENT_MODEL_INFO
 
-    if os.path.isdir(checkpoint_path):
-        metadata = load_metadata(checkpoint_path)
-        if metadata and not is_model_usable(checkpoint_path):
+    path = pathlib.Path(checkpoint_path)
+    if not path.is_absolute():
+        path = ROOT / path
+    if path.is_dir():
+        metadata = load_metadata(str(path))
+        if metadata and not is_model_usable(str(path)):
             raise ValueError(
-                f"Модель {os.path.basename(checkpoint_path)} не прошла quality gate: "
-                f"{metadata.get('status', 'unknown')}"
+                f"Модель {path.name} не прошла quality gate: {metadata.get('status', 'unknown')}"
             )
-        checkpoint_path = os.path.join(checkpoint_path, "best_model.pt")
+        path = path / "best_model.pt"
 
-    if not os.path.exists(checkpoint_path):
-        print(f"Warning: Checkpoint {checkpoint_path} not found")
+    if not path.exists():
+        print(f"Warning: Checkpoint {path} not found")
         return
 
-    checkpoint = _safe_torch_load(checkpoint_path)
+    checkpoint = _safe_torch_load(str(path))
     pipeline_version = checkpoint.get("pipeline_version", PIPELINE_VERSION)
     if pipeline_version not in SUPPORTED_PIPELINES:
         raise ValueError(f"Неподдерживаемый pipeline модели: {pipeline_version}")
@@ -140,8 +146,8 @@ def _load_model(checkpoint_path: str) -> None:
     loaded_model.eval()
     model = loaded_model
     CURRENT_MODEL_INFO = {
-        "path": checkpoint_path,
-        "model_id": os.path.basename(os.path.dirname(checkpoint_path)),
+        "path": str(path),
+        "model_id": path.parent.name,
         "pipeline_version": pipeline_version,
         "model_architecture": checkpoint.get("model_architecture", "convlstm_baseline"),
         "forecast_step_minutes": MODEL_STEP_MINUTES,
@@ -149,16 +155,44 @@ def _load_model(checkpoint_path: str) -> None:
     }
 
 
-def _resolve_registry_model_path(value: str) -> str:
-    root = pathlib.Path(app.config["MODELS_REGISTRY_DIR"]).resolve()
+def _safe_child_path(value: str, root_value: str, must_exist: bool = True) -> pathlib.Path:
+    root = pathlib.Path(root_value).resolve()
     candidate = pathlib.Path(value)
     if not candidate.is_absolute():
+        candidate = (ROOT / candidate).resolve()
+    else:
         candidate = candidate.resolve()
     try:
         candidate.relative_to(root)
     except ValueError as exc:
-        raise ValueError("Разрешена загрузка моделей только из models/registry") from exc
-    return str(candidate)
+        raise ValueError(f"Путь должен находиться внутри {root}") from exc
+    if must_exist and not candidate.exists():
+        raise ValueError(f"Путь не существует: {candidate}")
+    return candidate
+
+
+def _resolve_registry_model_path(value: str) -> str:
+    return str(_safe_child_path(value, app.config["MODELS_REGISTRY_DIR"]))
+
+
+def _form_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(request.form.get(name, default))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name}: ожидается целое число") from exc
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name}: допустим диапазон {minimum}..{maximum}")
+    return value
+
+
+def _form_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(request.form.get(name, default))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name}: ожидается число") from exc
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name}: допустим диапазон {minimum}..{maximum}")
+    return value
 
 
 def _preprocess_input(array: np.ndarray) -> torch.Tensor:
@@ -240,6 +274,77 @@ def _get_observed_sequence(source_type: str, station_code: str):
     if source_type == "demo":
         return DemoRadarAdapter(grid_size=grid_shape).get_latest_sequence(INPUT_LENGTH)
     raise ValueError("Неверный тип источника")
+
+
+def _enqueue_download_job() -> dict:
+    station = request.form.get("station", "KOKX").upper()
+    if not re.fullmatch(r"[A-Z0-9]{4}", station):
+        raise ValueError("station: ожидается четырёхсимвольный код")
+    date_value = request.form.get("date", "")
+    datetime.datetime.strptime(date_value, "%Y-%m-%d")
+    count = _form_int("count", 100, 1, 2000)
+    command = [
+        sys.executable,
+        str(ROOT / "src" / "download_archive.py"),
+        "--station", station,
+        "--date", date_value,
+        "--count", str(count),
+        "--output", app.config["RAW_DATA_DIR"],
+    ]
+    return JOB_STORE.enqueue("download", command)
+
+
+def _enqueue_prepare_job() -> dict:
+    archive = _safe_child_path(
+        request.form.get("archive_dir", ""),
+        app.config["RAW_DATA_DIR"],
+    )
+    sequence_length = _form_int("seq_len", 8, 2, 48)
+    grid_profile = request.form.get("grid_profile", "canonical")
+    if grid_profile not in ("canonical", "legacy"):
+        raise ValueError("grid_profile должен быть canonical или legacy")
+    command = [
+        sys.executable,
+        str(ROOT / "src" / "make_dataset.py"),
+        "--archive-dir", str(archive),
+        "--output-dir", app.config["DATASETS_DIR"],
+        "--seq-len", str(sequence_length),
+        "--grid-profile", grid_profile,
+    ]
+    return JOB_STORE.enqueue("prepare", command)
+
+
+def _enqueue_train_job() -> dict:
+    raw_values = request.form.getlist("dataset_dirs[]") or request.form.getlist("dataset_dirs")
+    if len(raw_values) == 1 and "," in raw_values[0]:
+        raw_values = [value.strip() for value in raw_values[0].split(",") if value.strip()]
+    if not raw_values:
+        raise ValueError("Не выбран ни один датасет")
+    datasets = [
+        _safe_child_path(value, app.config["DATASETS_DIR"])
+        for value in raw_values
+    ]
+    epochs = _form_int("epochs", 10, 1, 1000)
+    batch_size = _form_int("batch_size", 1, 1, 64)
+    input_length = _form_int("input_length", 4, 2, 24)
+    target_length = _form_int("lead_time", 4, 1, 24)
+    learning_rate = _form_float("lr", 1e-4, 1e-7, 1.0)
+    validation_split = _form_float("val_split", 0.2, 0.05, 0.5)
+    command = [
+        sys.executable,
+        str(ROOT / "src" / "train_nowcasting_model.py"),
+        "--data-dirs", ",".join(str(path) for path in datasets),
+        "--epochs", str(epochs),
+        "--batch-size", str(batch_size),
+        "--input-length", str(input_length),
+        "--target-length", str(target_length),
+        "--lr", str(learning_rate),
+        "--val-split", str(validation_split),
+        "--output-dir", app.config["MODELS_REGISTRY_DIR"],
+    ]
+    if request.form.get("balanced_sampling", "true").lower() in ("false", "0", "off"):
+        command.append("--no-balanced-sampling")
+    return JOB_STORE.enqueue("train", command)
 
 
 @app.route("/")
@@ -391,14 +496,53 @@ def get_models_inventory():
     return jsonify(items)
 
 
+@app.route("/api/jobs", methods=["GET"])
+def list_jobs():
+    return jsonify(JOB_STORE.list(request.args.get("limit", 50)))
+
+
 @app.route("/api/task/download", methods=["POST"])
+def enqueue_download():
+    try:
+        job = _enqueue_download_job()
+        return jsonify({"success": True, "task_id": job["id"], "job": job}), 202
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+
 @app.route("/api/task/prepare", methods=["POST"])
+def enqueue_prepare():
+    try:
+        job = _enqueue_prepare_job()
+        return jsonify({"success": True, "task_id": job["id"], "job": job}), 202
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+
 @app.route("/api/task/train", methods=["POST"])
-def background_task_disabled():
-    return jsonify({
-        "success": False,
-        "message": "Фоновые задачи отключены до внедрения безопасного job runner. Используйте scripts/*.sh.",
-    }), 503
+def enqueue_train():
+    try:
+        job = _enqueue_train_job()
+        return jsonify({"success": True, "task_id": job["id"], "job": job}), 202
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+
+@app.route("/api/task/logs/<task_id>", methods=["GET"])
+def get_task_logs(task_id):
+    try:
+        job = JOB_STORE.get(task_id)
+        return jsonify({**job, "logs": JOB_STORE.read_log(task_id)})
+    except KeyError:
+        return jsonify({"error": "Задание не найдено"}), 404
+
+
+@app.route("/api/jobs/<task_id>/cancel", methods=["POST"])
+def cancel_job(task_id):
+    try:
+        return jsonify({"success": True, "job": JOB_STORE.request_cancel(task_id)})
+    except KeyError:
+        return jsonify({"error": "Задание не найдено"}), 404
 
 
 @app.route("/api/model/details/<model_id>", methods=["GET"])
@@ -420,7 +564,7 @@ def export_netcdf():
     if LAST_FORECAST.get("data") is None:
         return jsonify({"error": "Прогноз не найден. Сначала запустите инференс"}), 404
     try:
-        export_dir = "data/exports"
+        export_dir = str(ROOT / "data" / "exports")
         os.makedirs(export_dir, exist_ok=True)
         station = LAST_FORECAST.get("station", "unknown")
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -443,11 +587,6 @@ def export_netcdf():
         return send_file(os.path.abspath(file_path), as_attachment=True)
     except Exception as exc:
         return jsonify({"error": f"Ошибка экспорта: {exc}"}), 500
-
-
-@app.route("/api/task/logs/<task_id>", methods=["GET"])
-def get_task_logs(task_id):
-    return jsonify({"error": "Фоновый task runner отключён"}), 503
 
 
 @app.route("/api/data/preview", methods=["GET"])
