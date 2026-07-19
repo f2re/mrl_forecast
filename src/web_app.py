@@ -7,27 +7,27 @@ import os
 import pathlib
 import re
 import sys
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
 
 import numpy as np
 from flask import Flask, jsonify, render_template, request
 import torch
-import torch.nn as nn
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.append(str(pathlib.Path(__file__).parent))
 
 from adapters import DemoRadarAdapter, LocalDirectoryAdapter, NOAAAWSAdapter, NOAAFTPAdapter
-from config import FORECAST_STEP_MINUTES, MAX_DBZ, PRODUCT_NAME
-from convlstm import ConvLSTM
+from config import MAX_DBZ, PRODUCT_NAME
+from diagnostic_visualization import render_evolution_layers
 from export_utils import save_forecast_to_netcdf
 from forecast_quality import summarize_forecast
 from jobs import JobStore
 from map_visualization import RADAR_COORDS, generate_sequence_plots
 from metadata_utils import load_metadata, scan_inventory
-from radar_pipeline import CANONICAL_PIPELINE_VERSION, PIPELINE_VERSION, RadarPipeline
+from model_runtime import ModelRuntime
+from radar_pipeline import CANONICAL_PIPELINE_VERSION
 from source_registry import build_default_source_registry
 
 app = Flask(__name__, template_folder="../templates")
@@ -37,22 +37,13 @@ app.config["MODELS_REGISTRY_DIR"] = str(ROOT / "models" / "registry")
 app.config["LOCAL_DATA_DIR"] = os.environ.get("RADAR_DATA_DIR", str(ROOT / "data" / "processed"))
 
 CHECKPOINT_PATH = os.environ.get("NOWCAST_MODEL_CHECKPOINT", str(ROOT / "models" / "checkpoints" / "best_model.pt"))
-SUPPORTED_PIPELINES = {PIPELINE_VERSION, CANONICAL_PIPELINE_VERSION}
+RUNTIME = ModelRuntime(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 JOB_STORE = JobStore()
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model: Optional[nn.Module] = None
-INPUT_LENGTH = 4
-TARGET_LENGTH = 4
-HIDDEN_CHANNELS: List[int] = []
-MODEL_STEP_MINUTES = FORECAST_STEP_MINUTES
-MODEL_GRID: Dict = {}
-CURRENT_MODEL_INFO: Dict = {}
 LAST_FORECAST: Dict = {}
 
 
-def _lead_times_minutes(target_length: int) -> List[int]:
-    return [MODEL_STEP_MINUTES * (index + 1) for index in range(target_length)]
+def _lead_times_minutes() -> List[int]:
+    return [RUNTIME.forecast_step_minutes * (index + 1) for index in range(RUNTIME.target_length)]
 
 
 def _confidence_by_lead(lead_times: List[int]) -> List[str]:
@@ -69,25 +60,6 @@ def _confidence_by_lead(lead_times: List[int]) -> List[str]:
     return values
 
 
-def _default_grid(pipeline_version: str) -> Dict:
-    pipeline = RadarPipeline.canonical() if pipeline_version == CANONICAL_PIPELINE_VERSION else RadarPipeline()
-    return pipeline.metadata()["grid"]
-
-
-def _model_pipeline() -> RadarPipeline:
-    if CURRENT_MODEL_INFO.get("pipeline_version") == CANONICAL_PIPELINE_VERSION:
-        return RadarPipeline.canonical()
-    return RadarPipeline()
-
-
-def _expected_grid_shape() -> Optional[tuple[int, int]]:
-    width = MODEL_GRID.get("width")
-    height = MODEL_GRID.get("height")
-    if width and height:
-        return int(height), int(width)
-    return None
-
-
 def is_model_usable(model_path: str) -> bool:
     metadata = load_metadata(model_path)
     return bool(
@@ -97,71 +69,10 @@ def is_model_usable(model_path: str) -> bool:
     )
 
 
-def _safe_torch_load(path: str):
-    try:
-        return torch.load(path, map_location=device, weights_only=True)
-    except TypeError:
-        return torch.load(path, map_location=device)
-
-
-def _load_model(checkpoint_path: str) -> None:
-    global model, INPUT_LENGTH, TARGET_LENGTH, HIDDEN_CHANNELS
-    global MODEL_STEP_MINUTES, MODEL_GRID, CURRENT_MODEL_INFO
-
-    path = pathlib.Path(checkpoint_path)
-    if not path.is_absolute():
-        path = ROOT / path
-    if path.is_dir():
-        metadata = load_metadata(str(path))
-        if metadata and not is_model_usable(str(path)):
-            raise ValueError(
-                f"Модель {path.name} не прошла quality gate: {metadata.get('status', 'unknown')}"
-            )
-        path = path / "best_model.pt"
-
-    if not path.exists():
-        print(f"Warning: Checkpoint {path} not found")
-        return
-
-    checkpoint = _safe_torch_load(str(path))
-    pipeline_version = checkpoint.get("pipeline_version", PIPELINE_VERSION)
-    if pipeline_version not in SUPPORTED_PIPELINES:
-        raise ValueError(f"Неподдерживаемый pipeline модели: {pipeline_version}")
-
-    hyperparameters = checkpoint.get("hyperparameters", {})
-    INPUT_LENGTH = int(checkpoint.get("input_length", hyperparameters.get("input_length", 4)))
-    TARGET_LENGTH = int(checkpoint.get("target_length", hyperparameters.get("target_length", 4)))
-    HIDDEN_CHANNELS = list(checkpoint.get("hidden_channels", [32, 32]))
-    MODEL_STEP_MINUTES = int(checkpoint.get("forecast_step_minutes", FORECAST_STEP_MINUTES))
-    MODEL_GRID = dict(checkpoint.get("grid") or _default_grid(pipeline_version))
-
-    loaded_model = ConvLSTM(
-        input_channels=1,
-        hidden_channels=HIDDEN_CHANNELS,
-        kernel_size=(3, 3),
-        output_steps=TARGET_LENGTH,
-    )
-    loaded_model.load_state_dict(checkpoint["model_state_dict"])
-    loaded_model.to(device)
-    loaded_model.eval()
-    model = loaded_model
-    CURRENT_MODEL_INFO = {
-        "path": str(path),
-        "model_id": path.parent.name,
-        "pipeline_version": pipeline_version,
-        "model_architecture": checkpoint.get("model_architecture", "convlstm_baseline"),
-        "forecast_step_minutes": MODEL_STEP_MINUTES,
-        "grid": MODEL_GRID,
-    }
-
-
 def _safe_child_path(value: str, root_value: str, must_exist: bool = True) -> pathlib.Path:
     root = pathlib.Path(root_value).resolve()
     candidate = pathlib.Path(value)
-    if not candidate.is_absolute():
-        candidate = (ROOT / candidate).resolve()
-    else:
-        candidate = candidate.resolve()
+    candidate = (ROOT / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
     try:
         candidate.relative_to(root)
     except ValueError as exc:
@@ -171,8 +82,21 @@ def _safe_child_path(value: str, root_value: str, must_exist: bool = True) -> pa
     return candidate
 
 
-def _resolve_registry_model_path(value: str) -> str:
-    return str(_safe_child_path(value, app.config["MODELS_REGISTRY_DIR"]))
+def _resolve_registry_model_path(value: str) -> pathlib.Path:
+    return _safe_child_path(value, app.config["MODELS_REGISTRY_DIR"])
+
+
+def _load_model(value: str) -> Dict:
+    path = pathlib.Path(value)
+    path = (ROOT / path).resolve() if not path.is_absolute() else path.resolve()
+    model_dir = path if path.is_dir() else path.parent
+    metadata = load_metadata(str(model_dir))
+    if metadata and metadata.get("status") not in ("completed", "published"):
+        raise ValueError(
+            f"Модель {model_dir.name} не прошла quality gate: {metadata.get('status', 'unknown')}"
+        )
+    checkpoint = model_dir / "best_model.pt" if path.is_dir() else path
+    return RUNTIME.load(str(checkpoint))
 
 
 def _form_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -195,85 +119,96 @@ def _form_float(name: str, default: float, minimum: float, maximum: float) -> fl
     return value
 
 
-def _preprocess_input(array: np.ndarray) -> torch.Tensor:
-    values = np.asarray(array, dtype=np.float32)
-    if values.ndim == 4 and values.shape[-1] == 1:
-        values = values.squeeze(-1)
-    if values.ndim != 3:
-        raise ValueError(f"Ожидается последовательность [T,H,W], получено {values.shape}")
-    if values.shape[0] < INPUT_LENGTH:
-        raise ValueError(f"Недостаточно сроков: требуется {INPUT_LENGTH}, получено {values.shape[0]}")
-    values = values[-INPUT_LENGTH:]
-
-    expected_shape = _expected_grid_shape()
-    if expected_shape and values.shape[-2:] != expected_shape:
-        raise ValueError(
-            f"Сетка источника {values.shape[-2:]} несовместима с моделью {expected_shape}"
-        )
-    values = np.clip(np.nan_to_num(values, nan=0.0), 0.0, MAX_DBZ) / MAX_DBZ
-    return torch.from_numpy(values).unsqueeze(1).unsqueeze(0).float().to(device)
+def _parse_timestamp(value) -> datetime.datetime:
+    text = str(value.decode("utf-8") if isinstance(value, bytes) else value)
+    timestamp = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=datetime.UTC)
+    return timestamp.astimezone(datetime.UTC)
 
 
 def _uploaded_sequence(uploaded):
     payload = np.load(uploaded.stream, allow_pickle=False)
+    inferred_time = False
     try:
         if isinstance(payload, np.lib.npyio.NpzFile):
             if "reflectivity" in payload:
-                values = payload["reflectivity"]
+                values = np.asarray(payload["reflectivity"], dtype=np.float32)
             elif "arr_0" in payload:
-                values = payload["arr_0"]
+                values = np.asarray(payload["arr_0"], dtype=np.float32)
             else:
                 raise ValueError("NPZ не содержит reflectivity или arr_0")
-            if "valid_mask" in payload:
-                values = np.where(payload["valid_mask"], values, 0.0)
+            masks = np.asarray(payload["valid_mask"], dtype=bool) if "valid_mask" in payload else np.isfinite(values)
             timestamps_raw = payload["timestamps_utc"] if "timestamps_utc" in payload else None
         else:
-            values = payload
+            values = np.asarray(payload, dtype=np.float32)
+            masks = np.isfinite(values)
             timestamps_raw = None
 
+        if values.ndim != 3 or masks.shape != values.shape:
+            raise ValueError("Загруженный файл должен содержать reflectivity и mask формы [T,H,W]")
         if timestamps_raw is not None:
-            timestamps = [
-                datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-                for value in timestamps_raw
-            ]
+            timestamps = [_parse_timestamp(value) for value in timestamps_raw]
+            if len(timestamps) != values.shape[0]:
+                raise ValueError("timestamps_utc не соответствует длине sequence")
         else:
+            inferred_time = True
             now = datetime.datetime.now(datetime.UTC)
             timestamps = [
-                now - datetime.timedelta(minutes=(len(values) - index - 1) * MODEL_STEP_MINUTES)
+                now - datetime.timedelta(
+                    minutes=(len(values) - index - 1) * RUNTIME.forecast_step_minutes
+                )
                 for index in range(len(values))
             ]
-        return np.asarray(values), timestamps
+        return values, masks, timestamps, inferred_time
     finally:
         if isinstance(payload, np.lib.npyio.NpzFile):
             payload.close()
 
 
 def _get_observed_sequence(source_type: str, station_code: str):
-    grid_shape = _expected_grid_shape() or (256, 256)
-    pipeline = _model_pipeline()
+    grid_shape = RUNTIME.expected_grid_shape() or (256, 256)
+    pipeline = RUNTIME.pipeline()
     if source_type == "local":
-        adapter = LocalDirectoryAdapter(
+        return LocalDirectoryAdapter(
             request.form.get("local_path", app.config["LOCAL_DATA_DIR"]),
             grid_size=grid_shape,
             pipeline=pipeline,
-        )
-        return adapter.get_latest_sequence(INPUT_LENGTH)
+        ).get_latest_sequence(RUNTIME.input_length)
     if source_type == "ftp":
-        if CURRENT_MODEL_INFO.get("pipeline_version") == CANONICAL_PIPELINE_VERSION:
+        if RUNTIME.info.get("pipeline_version") == CANONICAL_PIPELINE_VERSION:
             raise ValueError("FTP Level III ещё не унифицирован с canonical 1 км pipeline")
         return NOAAFTPAdapter(grid_size=grid_shape).get_latest_sequence(
-            INPUT_LENGTH,
+            RUNTIME.input_length,
             station_code=station_code,
             end_file_id=request.form.get("ftp_time", "latest"),
         )
     if source_type == "aws":
         return NOAAAWSAdapter(grid_size=grid_shape, pipeline=pipeline).get_latest_sequence(
-            INPUT_LENGTH,
+            RUNTIME.input_length,
             station_code=station_code,
         )
     if source_type == "demo":
-        return DemoRadarAdapter(grid_size=grid_shape).get_latest_sequence(INPUT_LENGTH)
+        return DemoRadarAdapter(grid_size=grid_shape).get_latest_sequence(RUNTIME.input_length)
     raise ValueError("Неверный тип источника")
+
+
+def _encode_images(images: List[bytes], labels: List[str]) -> List[Dict]:
+    return [
+        {"data": base64.b64encode(image).decode("utf-8"), "label": labels[index]}
+        for index, image in enumerate(images)
+    ]
+
+
+def _evolution_summary(diagnostics: Dict[str, np.ndarray]) -> Dict[str, float]:
+    summary: Dict[str, float] = {}
+    if "motion" in diagnostics:
+        motion = diagnostics["motion"]
+        summary["mean_motion_pixels"] = float(np.mean(np.sqrt(motion[:, 0] ** 2 + motion[:, 1] ** 2)))
+    for name in ("growth", "decay", "uncertainty"):
+        if name in diagnostics:
+            summary[f"mean_{name}"] = float(np.mean(diagnostics[name]))
+    return summary
 
 
 def _enqueue_download_job() -> dict:
@@ -283,35 +218,36 @@ def _enqueue_download_job() -> dict:
     date_value = request.form.get("date", "")
     datetime.datetime.strptime(date_value, "%Y-%m-%d")
     count = _form_int("count", 100, 1, 2000)
-    command = [
-        sys.executable,
-        str(ROOT / "src" / "download_archive.py"),
-        "--station", station,
-        "--date", date_value,
-        "--count", str(count),
-        "--output", app.config["RAW_DATA_DIR"],
-    ]
-    return JOB_STORE.enqueue("download", command)
+    return JOB_STORE.enqueue(
+        "download",
+        [
+            sys.executable,
+            str(ROOT / "src" / "download_archive.py"),
+            "--station", station,
+            "--date", date_value,
+            "--count", str(count),
+            "--output", app.config["RAW_DATA_DIR"],
+        ],
+    )
 
 
 def _enqueue_prepare_job() -> dict:
-    archive = _safe_child_path(
-        request.form.get("archive_dir", ""),
-        app.config["RAW_DATA_DIR"],
-    )
+    archive = _safe_child_path(request.form.get("archive_dir", ""), app.config["RAW_DATA_DIR"])
     sequence_length = _form_int("seq_len", 8, 2, 48)
     grid_profile = request.form.get("grid_profile", "canonical")
     if grid_profile not in ("canonical", "legacy"):
         raise ValueError("grid_profile должен быть canonical или legacy")
-    command = [
-        sys.executable,
-        str(ROOT / "src" / "make_dataset.py"),
-        "--archive-dir", str(archive),
-        "--output-dir", app.config["DATASETS_DIR"],
-        "--seq-len", str(sequence_length),
-        "--grid-profile", grid_profile,
-    ]
-    return JOB_STORE.enqueue("prepare", command)
+    return JOB_STORE.enqueue(
+        "prepare",
+        [
+            sys.executable,
+            str(ROOT / "src" / "make_dataset.py"),
+            "--archive-dir", str(archive),
+            "--output-dir", app.config["DATASETS_DIR"],
+            "--seq-len", str(sequence_length),
+            "--grid-profile", grid_profile,
+        ],
+    )
 
 
 def _enqueue_train_job() -> dict:
@@ -320,29 +256,37 @@ def _enqueue_train_job() -> dict:
         raw_values = [value.strip() for value in raw_values[0].split(",") if value.strip()]
     if not raw_values:
         raise ValueError("Не выбран ни один датасет")
-    datasets = [
-        _safe_child_path(value, app.config["DATASETS_DIR"])
-        for value in raw_values
-    ]
-    epochs = _form_int("epochs", 10, 1, 1000)
+    datasets = [_safe_child_path(value, app.config["DATASETS_DIR"]) for value in raw_values]
+
+    architecture = request.form.get("architecture", "phys-evolution")
+    if architecture not in ("phys-evolution", "convlstm"):
+        raise ValueError("Неизвестная архитектура")
+    epochs = _form_int("epochs", 20, 1, 1000)
     batch_size = _form_int("batch_size", 1, 1, 64)
     input_length = _form_int("input_length", 4, 2, 24)
     target_length = _form_int("lead_time", 4, 1, 24)
     learning_rate = _form_float("lr", 1e-4, 1e-7, 1.0)
     validation_split = _form_float("val_split", 0.2, 0.05, 0.5)
+    base_channels = _form_int("base_channels", 16, 4, 64)
+    hidden_channels = _form_int("hidden_channels", 24, 4, 128)
+
     command = [
         sys.executable,
         str(ROOT / "src" / "train_nowcasting_model.py"),
         "--data-dirs", ",".join(str(path) for path in datasets),
+        "--architecture", architecture,
         "--epochs", str(epochs),
         "--batch-size", str(batch_size),
         "--input-length", str(input_length),
         "--target-length", str(target_length),
+        "--base-channels", str(base_channels),
+        "--hidden-channels", str(hidden_channels),
         "--lr", str(learning_rate),
         "--val-split", str(validation_split),
         "--output-dir", app.config["MODELS_REGISTRY_DIR"],
     ]
-    if request.form.get("balanced_sampling", "true").lower() in ("false", "0", "off"):
+    balanced = request.form.get("balanced_sampling") in ("true", "1", "on")
+    if not balanced:
         command.append("--no-balanced-sampling")
     return JOB_STORE.enqueue("train", command)
 
@@ -370,96 +314,100 @@ def get_ftp_times():
 @app.route("/api/predict", methods=["POST"])
 def predict():
     global LAST_FORECAST
-    if model is None:
+    if not RUNTIME.loaded:
         return jsonify({"error": "Модель ИИ не загружена"}), 500
 
     source_type = request.form.get("source_type", "")
     station_code = request.form.get("ftp_station", "kokx")
     try:
+        warnings = ["not_official_warning", "reflectivity_only_no_nwp"]
         if source_type == "upload":
             uploaded = request.files.get("file")
             if not uploaded:
                 return jsonify({"error": "Файл не выбран"}), 400
-            array, timestamps = _uploaded_sequence(uploaded)
+            values, masks, timestamps, inferred_time = _uploaded_sequence(uploaded)
             status_message = "Файл загружен вручную"
             source_status = "observed"
+            if inferred_time:
+                warnings.append("manual_timestamp_inferred")
         else:
             sequence = _get_observed_sequence(source_type, station_code)
-            array, timestamps, status_message = sequence
+            values = sequence.stack(require_observed=sequence.status == "observed")
+            masks = np.stack([frame.valid_mask for frame in sequence.frames], axis=0)
+            timestamps = sequence.timestamps
+            status_message = sequence.message
             source_status = sequence.status
 
-        tensor_input = _preprocess_input(array)
-        with torch.no_grad():
-            predictions, _ = model(tensor_input)
-
-        input_data = tensor_input.cpu().squeeze(0).squeeze(1).numpy()
-        forecast_data = predictions.cpu().squeeze(0).squeeze(1).numpy()
-        diagnostics = summarize_forecast(forecast_data * MAX_DBZ)
-        if diagnostics["uniform_field_anomaly"]:
+        result = RUNTIME.predict(values, masks)
+        input_data = result["input"]
+        forecast_data = result["forecast"]
+        diagnostics = result["diagnostics"]
+        reflectivity_diagnostics = summarize_forecast(forecast_data * MAX_DBZ)
+        if reflectivity_diagnostics["uniform_field_anomaly"]:
             return jsonify({
                 "error": "Прогноз отклонён: обнаружен почти однородный слой отражаемости",
                 "source_status": source_status,
-                "diagnostics": diagnostics,
+                "diagnostics": reflectivity_diagnostics,
             }), 422
 
+        timestamps = timestamps[-RUNTIME.input_length:]
         last_time = timestamps[-1]
-        range_km = float(MODEL_GRID.get("radius_km", 250.0))
-        images = generate_sequence_plots(
+        range_km = float(RUNTIME.grid.get("radius_km", 250.0))
+        sequence_images = generate_sequence_plots(
             input_data,
             forecast_data,
-            INPUT_LENGTH,
+            RUNTIME.input_length,
             station_code=station_code,
             start_datetime=last_time,
-            history_timestamps=timestamps[-INPUT_LENGTH:],
-            interval_minutes=MODEL_STEP_MINUTES,
+            history_timestamps=timestamps,
+            interval_minutes=RUNTIME.forecast_step_minutes,
             max_range_km=range_km,
         )
-
-        history = [
-            {
-                "data": base64.b64encode(images[index]).decode("utf-8"),
-                "label": timestamps[-INPUT_LENGTH + index].strftime("%H:%M") + " UTC",
-            }
-            for index in range(INPUT_LENGTH)
+        history_labels = [timestamp.strftime("%H:%M") + " UTC" for timestamp in timestamps]
+        lead_times = _lead_times_minutes()
+        forecast_labels = [
+            f"{last_time + datetime.timedelta(minutes=lead):%H:%M} UTC (T+{lead} мин)"
+            for lead in lead_times
         ]
-        lead_times = _lead_times_minutes(TARGET_LENGTH)
-        forecast = []
-        for index, lead_time in enumerate(lead_times):
-            valid_time = last_time + datetime.timedelta(minutes=lead_time)
-            forecast.append({
-                "data": base64.b64encode(images[INPUT_LENGTH + index]).decode("utf-8"),
-                "label": f"{valid_time:%H:%M} UTC (T+{lead_time} мин)",
-                "lead_time_minutes": lead_time,
-            })
+        history = _encode_images(sequence_images[:RUNTIME.input_length], history_labels)
+        forecast = _encode_images(sequence_images[RUNTIME.input_length:], forecast_labels)
+
+        layers: Dict[str, List[Dict]] = {"reflectivity": forecast}
+        rendered_diagnostics = render_evolution_layers(diagnostics, lead_times, range_km)
+        for name, images in rendered_diagnostics.items():
+            labels = [f"{name} · T+{lead_times[index]} мин" for index in range(len(images))]
+            layers[name] = _encode_images(images, labels)
 
         LAST_FORECAST = {
             "data": forecast_data * MAX_DBZ,
             "base_time": last_time,
             "station": station_code,
             "source": source_type,
-            "model_id": CURRENT_MODEL_INFO.get("model_id", "unknown"),
-            "model_architecture": CURRENT_MODEL_INFO.get("model_architecture", "unknown"),
-            "pipeline_version": CURRENT_MODEL_INFO.get("pipeline_version", "legacy"),
-            "forecast_step_minutes": MODEL_STEP_MINUTES,
+            "model_id": RUNTIME.info.get("model_id", "unknown"),
+            "model_architecture": RUNTIME.architecture,
+            "pipeline_version": RUNTIME.info.get("pipeline_version", "legacy"),
+            "forecast_step_minutes": RUNTIME.forecast_step_minutes,
         }
         return jsonify({
             "product": PRODUCT_NAME,
             "units": "dBZ",
             "base_time_utc": last_time.isoformat(),
-            "forecast_step_minutes": MODEL_STEP_MINUTES,
+            "forecast_step_minutes": RUNTIME.forecast_step_minutes,
             "horizon_minutes": lead_times[-1] if lead_times else 0,
             "lead_times_minutes": lead_times,
-            "pipeline_version": CURRENT_MODEL_INFO.get("pipeline_version", "legacy"),
-            "model_id": CURRENT_MODEL_INFO.get("model_id", "unknown"),
-            "model_architecture": CURRENT_MODEL_INFO.get("model_architecture", "unknown"),
-            "grid": MODEL_GRID,
+            "pipeline_version": RUNTIME.info.get("pipeline_version", "legacy"),
+            "model_id": RUNTIME.info.get("model_id", "unknown"),
+            "model_architecture": RUNTIME.architecture,
+            "grid": RUNTIME.grid,
             "history": history,
             "forecast": forecast,
+            "layers": layers,
             "status": status_message,
             "source_status": source_status,
             "confidence_by_lead": _confidence_by_lead(lead_times),
-            "diagnostics": diagnostics,
-            "warnings": ["not_official_warning", "reflectivity_only_no_nwp"],
+            "diagnostics": reflectivity_diagnostics,
+            "evolution_diagnostics": _evolution_summary(diagnostics),
+            "warnings": warnings,
         })
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -467,13 +415,13 @@ def predict():
 
 @app.route("/api/model/load", methods=["POST"])
 def load_model_route():
-    model_path = request.form.get("model_path")
-    if not model_path:
+    value = request.form.get("model_path")
+    if not value:
         return jsonify({"error": "Путь к модели не указан"}), 400
     try:
-        safe_path = _resolve_registry_model_path(model_path)
-        _load_model(safe_path)
-        return jsonify({"success": True, "message": f"Модель {os.path.basename(safe_path)} загружена"})
+        path = _resolve_registry_model_path(value)
+        info = _load_model(str(path))
+        return jsonify({"success": True, "message": f"Модель {info['model_id']} загружена", "model": info})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -580,8 +528,8 @@ def export_netcdf():
             model_architecture=LAST_FORECAST.get("model_architecture", "unknown"),
             source=LAST_FORECAST.get("source", "unknown"),
             pipeline_version=LAST_FORECAST.get("pipeline_version", "legacy"),
-            interval_minutes=LAST_FORECAST.get("forecast_step_minutes", MODEL_STEP_MINUTES),
-            grid_resolution=float(MODEL_GRID.get("resolution_m", 1000.0)),
+            interval_minutes=LAST_FORECAST.get("forecast_step_minutes", RUNTIME.forecast_step_minutes),
+            grid_resolution=float(RUNTIME.grid.get("resolution_m", 1000.0)),
         )
         from flask import send_file
         return send_file(os.path.abspath(file_path), as_attachment=True)
@@ -598,12 +546,7 @@ def preview_data():
     try:
         import nexradaws
         date = datetime.datetime.strptime(date_value, "%Y-%m-%d")
-        scans = nexradaws.NexradAwsInterface().get_avail_scans(
-            date.year,
-            date.month,
-            date.day,
-            station,
-        )
+        scans = nexradaws.NexradAwsInterface().get_avail_scans(date.year, date.month, date.day, station)
         counts = [0] * 24
         for scan in scans:
             if hasattr(scan, "scan_time"):
@@ -622,7 +565,10 @@ def preview_data():
 
 
 if __name__ == "__main__":
-    _load_model(CHECKPOINT_PATH)
+    try:
+        _load_model(CHECKPOINT_PATH)
+    except Exception as exc:
+        print(f"Warning: model was not loaded: {exc}")
     port = int(os.environ.get("PORT", 5005))
     debug = os.environ.get("DEBUG", "false").lower() == "true"
     app.run(host="0.0.0.0", port=port, debug=debug)
