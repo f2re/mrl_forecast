@@ -2,80 +2,99 @@
 
 ## Цель
 
-Перевести проект от демонстрационного ConvLSTM-контура к воспроизводимой системе подготовки радиолокационных данных и экспериментального прогноза радиоэха. Приоритет — работающий результат без избыточной архитектуры.
+Перевести проект к воспроизводимой системе подготовки радиолокационных данных и экспериментального прогноза радиоэха. Приоритет — работающий результат без избыточной архитектуры.
 
-Принципы реализации:
+Принципы:
 
-- **KISS**: минимум обязательных сущностей и зависимостей;
-- **DRY**: терминал и веб-интерфейс используют одну прикладную логику;
-- **SOLID**: источник, декодирование, гридирование, датасет и модель разделены;
-- небольшое число проверок на критические контракты вместо большого набора хрупких тестов;
+- **KISS** — минимум обязательных сущностей;
+- **DRY** — терминал и веб используют одну прикладную логику;
+- **SOLID** — источник, доступ, декодирование, гридирование, датасет и модель разделены;
+- небольшое число проверок на критические контракты;
 - изменения выполняются последовательно в `main`.
 
 ## Зафиксированные решения
 
-1. Canonical grid: `512 × 512`, `1 км`, локальная AEQD, радиус около `256 км`.
+1. Canonical grid: `512 × 512`, `1 км`, local AEQD, радиус около `256 км`.
 2. Исходные файлы сохраняются без изменения; canonical frame является производным продуктом.
 3. `нет эха`, `нет данных`, покрытие, помехи и интерполяция разделены.
-4. `mtime` не используется как штатное время МРЛ.
+4. `mtime` не используется как время наблюдения.
 5. Основной вход модели содержит не менее `60 минут` истории.
-6. Целевой российский профиль: `6` входных и `6` выходных сроков с шагом `10 минут`.
-7. Профиль `4 × 15 минут` сохраняется как совместимый baseline.
+6. Целевой профиль: `6` входных и `6` выходных сроков с шагом `10 минут`.
+7. Профиль `4 × 15 минут` сохраняется как baseline.
 8. `MRL-PhysEvolution` отдельно прогнозирует перенос, рост, распад и неопределённость.
-9. Обучение запускается из терминала и интерфейса через один job runner.
-10. Интерфейс адаптивный, в визуальном языке macOS/iOS, без копирования фирменных элементов Apple.
-
-## Источники данных
-
-### Количественные
-
-- NOAA NEXRAD Level II — legacy и canonical adapters;
-- DWD Open Data — ODIM HDF5 DBZH adapter, raw archive downloader и UI job;
-- локальные ODIM HDF5/BUFR/NPZ — только при проверенном provenance;
-- российские ДМРЛ-BUFR — после получения проверенного открытого файла или endpoint.
-
-### Discovery и визуальный контроль
-
-- WIS2 Global Discovery Catalogue;
-- Meteoinfo — visual-only;
-- RainViewer — visual-only, короткий оперативный архив.
-
-Источник не получает `training_allowed`, пока не подтверждены единицы, геометрия, время, маски качества и условия использования.
+9. Обучение запускается из CLI и интерфейса через один job runner.
+10. Доступность URL не означает автоматический допуск данных к обучению.
+11. Секреты хранятся вне репозитория и не публикуются в health-report.
 
 ## Этапы
 
-### P0. Контракт данных и адаптеры — реализовано
+### P0. Контракт данных и quality masks — реализовано
 
-- canonical contract и capabilities;
-- сетка `512 × 512 / 1 км`;
-- формат `npz-radar-quality-v2`;
+- canonical contract и source capabilities;
+- `npz-radar-quality-v2`;
 - `reflectivity`, `valid_mask`, `coverage_mask`, `clutter_mask`, `interpolation_weight`, `timestamps_utc`;
-- effective mask используется в loss и verification;
-- маски проходят через local adapter и operational runtime;
-- NetCDF содержит quality masks;
-- UI отображает отдельные quality layers;
-- legacy `.npy` читается только для совместимости;
-- фактический шаг источника используется при формировании последовательностей;
+- effective mask в loss, verification и runtime;
+- quality masks в UI и NetCDF;
+- legacy `.npy` только для совместимости;
 - неизвестный timestamp завершает обработку ошибкой;
-- DEMO cadence может быть согласован с cadence активной модели.
+- DEMO cadence согласуется с cadence модели.
 
-Оставшийся долг P0: подключать реальные clutter/interpolation quality fields конкретных радарных продуктов. Пока источник их не предоставляет, применяется явно маркированный бинарный fallback.
+Оставшийся долг: подключать реальные clutter/interpolation fields конкретных продуктов. Пока источник их не предоставляет, применяется явно маркированный бинарный fallback.
 
-### P1. Открытые источники и каталог — реализован основной контур
+### P1. Источники, доступ и каталог — основной контур реализован
 
-- NOAA AWS downloader с фильтрацией `_MDM`, SHA-256 и provenance;
-- DWD ODIM HDF5 adapter и raw downloader;
-- WIS2 discovery;
-- Meteoinfo/RainViewer как visual-only;
-- SQLite-каталог архивов, отдельных сроков и датасетов;
-- индекс по источнику, станции и времени;
-- хранение SHA-256, QC и provenance;
-- CLI управления каталогом;
-- автоматическая индексация после download и prepare;
-- перестроение каталога из интерфейса;
-- source-specific NOAA/DWD ingest jobs в UI.
+Полностью автоматизированы:
 
-Оставшийся долг: найти и проверить открытый российский raw DMRL/BUFR endpoint.
+- NOAA NEXRAD Level II;
+- DWD ODIM HDF5;
+- FMI public S3;
+- OPERA ORD API и anonymous 24-hour cache;
+- DMI Radar STAC API;
+- KNMI Open Data API с API key;
+- WIS2 Global Cache.
+
+Реализовано:
+
+- общий `RemoteRadarFile`;
+- `SourceProbeResult`;
+- открытый HTTP и unsigned S3;
+- byte-range download test;
+- полное скачивание с потоковым SHA-256;
+- единый raw archive metadata;
+- SQLite-каталог архивов и наблюдений;
+- автоматическая индексация;
+- concurrent health probe;
+- startup probe полностью автоматизированных источников;
+- dashboard health-report;
+- удаление signed URL query и credential fields из отчётов;
+- secure credential store `0600`;
+- env override;
+- интерактивный скрытый ввод токена;
+- порядок регистрации в capabilities и UI;
+- generic ODIM archive → canonical dataset path;
+- вычисляемая блокировка датасетов от источников с `training_allowed=false`.
+
+Probe-only/manual profiles:
+
+- WMO Weather Radar Database;
+- Météo-France Package Radar;
+- CEDA NIMROD;
+- MeteoSwiss;
+- GeoSphere Austria;
+- AURA/NCI;
+- MetService;
+- Taiwan QPESUMS;
+- NASA GPM-GV;
+- ЦАО NCRadar.
+
+Документация: [`docs/source-access.md`](../docs/source-access.md).
+
+Оставшийся долг P1:
+
+1. проверить реальные prefix/schema для FMI, OPERA и WIS2;
+2. выполнить sample download DMI/KNMI;
+3. реализовать MeteoSwiss STAC и GeoSphere Data Hub downloader;
+4. получить открытый российский raw DMRL/BUFR endpoint либо официальный доступ NCRadar.
 
 ### P2. События и выборка — реализовано с fallback
 
@@ -83,28 +102,28 @@
 - пороговые площади и тенденции;
 - dry/echo 50/50 только в train;
 - validation/test сохраняют естественное распределение;
-- sequences объединяются в трёхчасовые chronological groups;
-- между train, validation и test удаляется пограничная группа;
-- выбор эпохи выполняется по validation;
-- окончательный quality gate — по независимому test;
-- для старых или слишком малых датасетов применяется явно маркированный `validation_fallback` с overlap gap.
+- трёхчасовые chronological groups;
+- purged boundaries между train, validation и test;
+- выбор эпохи по validation;
+- финальный quality gate по independent test;
+- `validation_fallback` для малых/legacy-наборов.
 
-Оставшийся долг: расширить event grouping на многодневные синоптические эпизоды и station holdout.
+Оставшийся долг: многодневные синоптические группы и station holdout.
 
-### P3. Baseline и верификация — реализован рабочий набор
+### P3. Baseline и verification — рабочий набор реализован
 
 - persistence;
-- global shift advection;
-- локальный coarse block motion;
+- global shift;
+- local block motion;
 - masked MSE;
 - CSI, POD, FAR;
 - frequency bias и ETS;
-- FSS на нескольких пространственных масштабах;
-- ошибка максимальной отражаемости;
-- bias площади зон `20/30/40 dBZ`;
+- FSS;
+- max dBZ error;
+- area bias `20/30/40 dBZ`;
 - uniform-field gate.
 
-Quality gate требует превосходства над persistence, global shift и block motion. Следующий возможный baseline — сторонний optical flow/pySTEPS после проверки вычислительной цены.
+Quality gate требует превосходства над persistence, global shift и block motion.
 
 ### P4. `MRL-PhysEvolution` — рабочая реализация
 
@@ -133,19 +152,18 @@ reflectivity + effective quality mask + range_norm
 
 - SQLite jobs table и один worker;
 - download/prepare/train/catalog jobs;
-- NOAA и DWD в одной форме загрузки;
-- отмена, журналы и восстановление статусов;
-- общий `ModelRuntime` для веба и терминала;
 - единый CLI `python mrl.py`;
 - команды `doctor`, `sources`, `download`, `prepare`, `train`, `infer`, `catalog`, `benchmark`, `serve`, `worker`;
-- адаптивный интерфейс и тёмная тема;
-- экраны источников, архива, каталога, обучения, заданий и моделей;
-- слои отражаемости, движения, роста, распада, неопределённости и quality masks;
-- HTML, CSS и JavaScript разделены.
+- source list/info/probe/configure/sample;
+- NOAA/DWD/FMI/OPERA/DMI/KNMI/WIS2 downloads;
+- адаптивный интерфейс и dark mode;
+- source health и registration guidance;
+- слои отражаемости, движения, роста, распада, uncertainty и quality masks;
+- HTML/CSS/JavaScript разделены.
 
 ### P6. CPU deployment — начато
 
-Реализован CPU benchmark, который фиксирует:
+Реализован CPU benchmark:
 
 - p50/p95/mean latency;
 - max RSS;
@@ -159,14 +177,16 @@ reflectivity + effective quality mask + range_norm
 - проверка квантизации;
 - отдельный inference dependency set;
 - production WSGI;
-- запрет произвольного checkpoint path во всех терминальных сценариях.
+- ограничение checkpoint path во всех терминальных сценариях.
 
 ## Следующий рабочий срез
 
-1. Выполнить end-to-end DWD decode/download/prepare на целевой машине и зафиксировать QC.
-2. Построить многодневный canonical archive для обучения.
-3. Обучить `MRL-PhysEvolution`, выполнить независимый test quality gate и CPU benchmark.
-4. Подключить реальные source-specific clutter/interpolation fields там, где они доступны.
-5. Реализовать ONNX/ONNX Runtime после подтверждения качества PyTorch-модели.
-6. Добавить station holdout и многодневное event grouping.
-7. Продолжить поиск открытого российского DMRL/BUFR endpoint через WIS2 без подмены визуальными тайлами.
+1. Выполнить live probe и sample download FMI/OPERA/DMI/KNMI/WIS2 на целевой машине.
+2. Проверить реальный ODIM decode и source-specific fields.
+3. Одобрить только проверенные adapters для train.
+4. Построить многодневный canonical archive.
+5. Обучить `MRL-PhysEvolution`, выполнить independent test и CPU benchmark.
+6. Реализовать MeteoSwiss/GeoSphere downloader.
+7. Подключить реальные clutter/interpolation fields.
+8. Продолжить поиск российского DMRL/BUFR/NCRadar доступа без подмены визуальными тайлами.
+9. После подтверждения качества перейти к ONNX/ONNX Runtime.
