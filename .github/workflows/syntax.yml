@@ -26,3 +26,7 @@ jobs:
         run: |
           node --check src/static/app.js
           node --check src/static/source-health.js
+      - name: Test source access contracts
+        run: |
+          python -m pip install --quiet numpy scipy requests
+          python -m unittest tests.test_source_access
