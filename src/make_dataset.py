@@ -11,6 +11,7 @@ from typing import Optional
 
 import numpy as np
 
+from config import FORECAST_STEP_MINUTES
 from event_catalog import class_counts, summarize_sequence
 from metadata_utils import load_metadata, save_metadata
 from radar_pipeline import RadarDecodeError, RadarPipeline, RadarPipelineConfig
@@ -43,6 +44,7 @@ def _timestamp_from_path(path: pathlib.Path) -> datetime.datetime:
 def _pipeline_for_legacy_arguments(
     grid_shape: tuple[int, int, int],
     grid_limits: tuple[tuple[float, float], ...],
+    time_step_minutes: int,
 ) -> RadarPipeline:
     return RadarPipeline(
         RadarPipelineConfig(
@@ -50,6 +52,7 @@ def _pipeline_for_legacy_arguments(
             width=grid_shape[2],
             radius_km=max(abs(grid_limits[1][0]), abs(grid_limits[1][1])) / 1000.0,
             vertical_limit_m=grid_limits[0][1],
+            time_step_minutes=time_step_minutes,
         )
     )
 
@@ -122,6 +125,7 @@ def process_archive_directory(
     grid_limits=((0, 10000), (-250000.0, 250000.0), (-250000.0, 250000.0)),
     pipeline: Optional[RadarPipeline] = None,
     grid_profile: str = "canonical",
+    time_step_minutes: int = FORECAST_STEP_MINUTES,
 ):
     """Grid observed radar files and save masked sequences plus provenance metadata."""
     archive_path = pathlib.Path(archive_dir)
@@ -146,9 +150,13 @@ def process_archive_directory(
     if pipeline is not None:
         radar_pipeline = pipeline
     elif grid_profile == "canonical":
-        radar_pipeline = RadarPipeline.canonical()
+        radar_pipeline = RadarPipeline(
+            config=RadarPipelineConfig.canonical(time_step_minutes=time_step_minutes)
+        )
     elif grid_profile == "legacy":
-        radar_pipeline = _pipeline_for_legacy_arguments(grid_shape, grid_limits)
+        radar_pipeline = _pipeline_for_legacy_arguments(
+            grid_shape, grid_limits, time_step_minutes
+        )
     else:
         raise ValueError(f"Unknown grid profile: {grid_profile}")
     radar_pipeline = _source_pipeline(radar_pipeline, source_type)
@@ -164,6 +172,7 @@ def process_archive_directory(
         "sequence_length": sequence_length,
         "sample_format": SAMPLE_FORMAT,
         "grid_profile": grid_profile,
+        "time_step_minutes": time_step_minutes,
         "pipeline": radar_pipeline.metadata(),
         "status": "processing",
         "sample_count": 0,
@@ -268,10 +277,12 @@ if __name__ == "__main__":
     parser.add_argument("--output-dir", default="data/processed_archive")
     parser.add_argument("--seq-len", type=int, default=8)
     parser.add_argument("--grid-profile", choices=("canonical", "legacy"), default="canonical")
+    parser.add_argument("--time-step-minutes", type=int, default=FORECAST_STEP_MINUTES)
     args = parser.parse_args()
     process_archive_directory(
         args.archive_dir,
         args.output_dir,
         args.seq_len,
         grid_profile=args.grid_profile,
+        time_step_minutes=args.time_step_minutes,
     )
