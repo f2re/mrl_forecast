@@ -17,7 +17,8 @@ class RadarSequenceDataset(Dataset):
 
     def __init__(self, data_dir: str, input_length: int = 4, target_length: int = 4):
         self.data_dir = pathlib.Path(data_dir)
-        self.files = sorted(self.data_dir.glob("*.npz")) + sorted(self.data_dir.glob("*.npy"))
+        npz_files = sorted(self.data_dir.glob("*.npz"))
+        self.files = npz_files or sorted(self.data_dir.glob("*.npy"))
         self.input_length = input_length
         self.target_length = target_length
         self.required_length = input_length + target_length
