@@ -9,7 +9,7 @@ import torch
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from losses import masked_mse  # noqa: E402
-from radar_contract import CanonicalRadarFrame, DEFAULT_CANONICAL_GRID  # noqa: E402
+from radar_contract import CanonicalGridSpec, CanonicalRadarFrame, DEFAULT_CANONICAL_GRID  # noqa: E402
 
 
 class MaskedContractTest(unittest.TestCase):
@@ -20,6 +20,7 @@ class MaskedContractTest(unittest.TestCase):
             timestamp_utc=datetime.datetime(2026, 7, 19),
             station_id="demo",
             source_id="fixture",
+            grid=CanonicalGridSpec(width=2, height=1),
         )
 
         values, mask = frame.to_model_arrays()
