@@ -42,7 +42,10 @@ def _source_sequence(runtime: ModelRuntime, args):
     if args.source == "local":
         adapter = LocalDirectoryAdapter(args.local_dir, grid_size=grid_shape, pipeline=pipeline)
         return adapter.get_latest_sequence(runtime.input_length)
-    return DemoRadarAdapter(grid_size=grid_shape).get_latest_sequence(runtime.input_length)
+    return DemoRadarAdapter(
+        grid_size=grid_shape,
+        time_step_minutes=runtime.forecast_step_minutes,
+    ).get_latest_sequence(runtime.input_length)
 
 
 def _evolution_summary(diagnostics: Dict[str, np.ndarray]) -> Dict[str, float]:
