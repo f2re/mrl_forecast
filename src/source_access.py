@@ -168,6 +168,14 @@ def parse_utc(value: Any) -> Optional[datetime.datetime]:
     return timestamp.astimezone(datetime.UTC)
 
 
+def file_sha256(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def download_http(
     remote: RemoteRadarFile,
     output_dir: str,
@@ -240,11 +248,12 @@ def unsigned_s3_client(region: str, endpoint_url: Optional[str] = None):
         from botocore.config import Config
     except ImportError as exc:
         raise SourceAccessError("boto3 and botocore are required for open S3 radar sources") from exc
+    s3_config = {"addressing_style": "path"} if endpoint_url else {}
     return boto3.client(
         "s3",
         region_name=region,
         endpoint_url=endpoint_url,
-        config=Config(signature_version=UNSIGNED),
+        config=Config(signature_version=UNSIGNED, s3=s3_config),
     )
 
 
@@ -320,12 +329,11 @@ def download_s3_file(remote: RemoteRadarFile, output_dir: str) -> Dict[str, Any]
     destination = destination_dir / pathlib.PurePosixPath(remote.filename).name
     client = unsigned_s3_client(str(region), metadata.get("endpoint_url"))
     client.download_file(str(bucket), str(key), str(destination))
-    digest = hashlib.sha256(destination.read_bytes()).hexdigest()
     return {
         "path": str(destination.resolve()),
         "filename": destination.name,
         "size_bytes": destination.stat().st_size,
-        "sha256": digest,
+        "sha256": file_sha256(destination),
         "source": remote.source_id,
         "file_id": remote.file_id,
     }
