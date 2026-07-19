@@ -21,15 +21,26 @@ class RadarSequenceDataset(Dataset):
         self.data_dir = pathlib.Path(data_dir)
         npz_files = sorted(self.data_dir.glob("*.npz"))
         files = npz_files or sorted(self.data_dir.glob("*.npy"))
-        catalog = self._load_event_catalog()
+        catalog = self._load_sequence_catalog()
 
         selected = [
-            (path, catalog.get(path.name, "unknown"))
+            (path, catalog.get(path.name, {}))
             for path in files
-            if catalog.get(path.name, "unknown") != "invalid"
+            if catalog.get(path.name, {}).get("event_class", "unknown") != "invalid"
         ]
-        self.files = [path for path, _event_class in selected]
-        self.sample_classes = [event_class for _path, event_class in selected]
+        self.files = [path for path, _metadata in selected]
+        self.sample_classes = [
+            str(metadata.get("event_class", "unknown"))
+            for _path, metadata in selected
+        ]
+        self.sample_groups = [
+            str(metadata.get("split_group") or f"legacy-{index:08d}")
+            for index, (_path, metadata) in enumerate(selected)
+        ]
+        self.sample_start_times = [
+            metadata.get("start_time_utc")
+            for _path, metadata in selected
+        ]
         self.input_length = input_length
         self.target_length = target_length
         self.required_length = input_length + target_length
@@ -63,7 +74,7 @@ class RadarSequenceDataset(Dataset):
             torch.from_numpy(valid_mask[split:end]),
         )
 
-    def _load_event_catalog(self) -> dict[str, str]:
+    def _load_sequence_catalog(self) -> dict[str, dict]:
         manifest_path = self.data_dir / "manifest.json"
         if not manifest_path.exists():
             return {}
@@ -72,7 +83,7 @@ class RadarSequenceDataset(Dataset):
         except (OSError, json.JSONDecodeError):
             return {}
         return {
-            str(item.get("file")): str(item.get("event_class", "unknown"))
+            str(item.get("file")): dict(item)
             for item in manifest.get("sequences", [])
             if item.get("file")
         }
@@ -115,6 +126,22 @@ def sample_classes_for_dataset(dataset: Dataset) -> list[str]:
             classes.extend(sample_classes_for_dataset(part))
         return classes
     return ["unknown"] * len(dataset)
+
+
+def sample_groups_for_dataset(dataset: Dataset) -> list[str]:
+    """Resolve chronological split groups through dataset wrappers."""
+
+    if isinstance(dataset, RadarSequenceDataset):
+        return list(dataset.sample_groups)
+    if isinstance(dataset, Subset):
+        parent_groups = sample_groups_for_dataset(dataset.dataset)
+        return [parent_groups[index] for index in dataset.indices]
+    if isinstance(dataset, ConcatDataset):
+        groups: list[str] = []
+        for part in dataset.datasets:
+            groups.extend(sample_groups_for_dataset(part))
+        return groups
+    return [f"unknown-{index:08d}" for index in range(len(dataset))]
 
 
 def balanced_sample_weights(dataset: Dataset) -> Optional[list[float]]:
