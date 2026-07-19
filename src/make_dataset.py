@@ -7,7 +7,7 @@ import datetime
 import json
 import pathlib
 import re
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 
@@ -29,7 +29,39 @@ QUALITY_FIELDS = (
 SPLIT_BLOCK_HOURS = 3
 
 
-def _timestamp_from_path(path: pathlib.Path) -> datetime.datetime:
+def _parse_utc(value: Any) -> Optional[datetime.datetime]:
+    if not value:
+        return None
+    text = str(value).replace("Z", "+00:00")
+    try:
+        timestamp = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=datetime.UTC)
+    return timestamp.astimezone(datetime.UTC)
+
+
+def _archive_file_metadata(source_meta: dict) -> dict[str, dict]:
+    result: dict[str, dict] = {}
+    for item in source_meta.get("files", []):
+        if isinstance(item, str):
+            result[pathlib.PurePath(item).name] = {"filename": pathlib.PurePath(item).name}
+        elif isinstance(item, dict):
+            filename = item.get("filename") or item.get("source_file")
+            if filename:
+                result[pathlib.PurePath(str(filename)).name] = dict(item)
+    return result
+
+
+def _timestamp_from_path(
+    path: pathlib.Path,
+    file_metadata: Optional[dict] = None,
+) -> datetime.datetime:
+    metadata_timestamp = _parse_utc((file_metadata or {}).get("timestamp_utc"))
+    if metadata_timestamp is not None:
+        return metadata_timestamp
+
     nexrad_match = NEXRAD_TIMESTAMP.match(path.name.upper())
     if nexrad_match:
         return datetime.datetime.strptime(
@@ -45,7 +77,7 @@ def _timestamp_from_path(path: pathlib.Path) -> datetime.datetime:
         ).replace(tzinfo=datetime.UTC)
 
     raise RadarDecodeError(
-        f"Observation timestamp is not encoded in {path.name}; file mtime is not accepted"
+        f"Observation timestamp is unavailable for {path.name}; file mtime is not accepted"
     )
 
 
@@ -72,10 +104,12 @@ def _pipeline_for_legacy_arguments(
     )
 
 
-def _source_pipeline(pipeline: RadarPipeline, source_type: str) -> RadarPipeline:
-    """Attach only the decoder required by the source; gridding stays shared."""
+def _source_pipeline(pipeline: RadarPipeline, source_meta: dict) -> RadarPipeline:
+    """Attach a format decoder while retaining one common gridding contract."""
 
-    if source_type == "dwd-open-data":
+    source_type = str(source_meta.get("source", "unknown"))
+    decoder = str(source_meta.get("decoder", "auto"))
+    if source_type == "dwd-open-data" or decoder == "odim_h5":
         from dwd_source import DWDOpenDataAdapter
 
         return RadarPipeline(
@@ -162,6 +196,7 @@ def process_archive_directory(
     if not station:
         raise ValueError("Raw archive metadata does not contain a station")
     source_type = source_meta.get("source", "aws")
+    file_metadata = _archive_file_metadata(source_meta)
 
     if pipeline is not None:
         radar_pipeline = pipeline
@@ -175,7 +210,7 @@ def process_archive_directory(
         )
     else:
         raise ValueError(f"Unknown grid profile: {grid_profile}")
-    radar_pipeline = _source_pipeline(radar_pipeline, source_type)
+    radar_pipeline = _source_pipeline(radar_pipeline, source_meta)
 
     dataset_id = f"dataset_{station}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     output_dir = pathlib.Path(output_root) / dataset_id
@@ -184,6 +219,7 @@ def process_archive_directory(
         "type": "dataset",
         "source_path": str(archive_path),
         "source_type": source_type,
+        "source_decoder": source_meta.get("decoder", "auto"),
         "station": station,
         "sequence_length": sequence_length,
         "sample_format": SAMPLE_FORMAT,
@@ -201,12 +237,19 @@ def process_archive_directory(
     frame_manifest = []
     errors = []
     for path in files:
+        item_metadata = file_metadata.get(path.name, {})
         try:
             frame = radar_pipeline.process_file(
                 str(path),
-                timestamp_utc=_timestamp_from_path(path),
+                timestamp_utc=_timestamp_from_path(path, item_metadata),
                 station=station,
                 source=source_type,
+            )
+            frame.provenance.update(
+                {
+                    "archive_source": source_type,
+                    "archive_file_metadata": item_metadata,
+                }
             )
             frames.append(frame)
             frame_manifest.append(
