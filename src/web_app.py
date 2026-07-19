@@ -21,12 +21,14 @@ sys.path.append(str(pathlib.Path(__file__).parent))
 from adapters import DemoRadarAdapter, LocalDirectoryAdapter, NOAAAWSAdapter, NOAAFTPAdapter
 from config import MAX_DBZ, PRODUCT_NAME
 from diagnostic_visualization import render_evolution_layers
+from dwd_source import DWDOpenDataAdapter
 from export_utils import save_forecast_to_netcdf
 from forecast_quality import summarize_forecast
 from jobs import JobStore
 from map_visualization import RADAR_COORDS, generate_sequence_plots
 from metadata_utils import load_metadata, scan_inventory
 from model_runtime import ModelRuntime
+from radar_catalog import RadarCatalog
 from radar_pipeline import CANONICAL_PIPELINE_VERSION
 from source_registry import build_default_source_registry
 
@@ -39,6 +41,7 @@ app.config["LOCAL_DATA_DIR"] = os.environ.get("RADAR_DATA_DIR", str(ROOT / "data
 CHECKPOINT_PATH = os.environ.get("NOWCAST_MODEL_CHECKPOINT", str(ROOT / "models" / "checkpoints" / "best_model.pt"))
 RUNTIME = ModelRuntime(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 JOB_STORE = JobStore()
+CATALOG = RadarCatalog()
 LAST_FORECAST: Dict = {}
 
 
@@ -212,14 +215,32 @@ def _evolution_summary(diagnostics: Dict[str, np.ndarray]) -> Dict[str, float]:
 
 
 def _enqueue_download_job() -> dict:
-    station = request.form.get("station", "KOKX").upper()
-    if not re.fullmatch(r"[A-Z0-9]{4}", station):
-        raise ValueError("station: ожидается четырёхсимвольный код")
+    source_id = request.form.get("source", "noaa-aws")
     date_value = request.form.get("date", "")
     datetime.datetime.strptime(date_value, "%Y-%m-%d")
     count = _form_int("count", 100, 1, 2000)
+
+    if source_id == "dwd-open-data":
+        station = request.form.get("station", "ess").lower()
+        if not re.fullmatch(r"[a-z0-9]{3}", station):
+            raise ValueError("station: для DWD ожидается трёхсимвольный код")
+        command = [
+            sys.executable,
+            str(ROOT / "src" / "download_dwd_archive.py"),
+            "--station", station,
+            "--date", date_value,
+            "--count", str(count),
+            "--output", app.config["RAW_DATA_DIR"],
+        ]
+        return JOB_STORE.enqueue("download-dwd", command)
+
+    if source_id != "noaa-aws":
+        raise ValueError("Источник загрузки должен быть noaa-aws или dwd-open-data")
+    station = request.form.get("station", "KOKX").upper()
+    if not re.fullmatch(r"[A-Z0-9]{4}", station):
+        raise ValueError("station: для NOAA ожидается четырёхсимвольный код")
     return JOB_STORE.enqueue(
-        "download",
+        "download-noaa",
         [
             sys.executable,
             str(ROOT / "src" / "download_archive.py"),
@@ -234,6 +255,7 @@ def _enqueue_download_job() -> dict:
 def _enqueue_prepare_job() -> dict:
     archive = _safe_child_path(request.form.get("archive_dir", ""), app.config["RAW_DATA_DIR"])
     sequence_length = _form_int("seq_len", 8, 2, 48)
+    time_step_minutes = _form_int("time_step_minutes", 15, 1, 60)
     grid_profile = request.form.get("grid_profile", "canonical")
     if grid_profile not in ("canonical", "legacy"):
         raise ValueError("grid_profile должен быть canonical или legacy")
@@ -246,6 +268,7 @@ def _enqueue_prepare_job() -> dict:
             "--output-dir", app.config["DATASETS_DIR"],
             "--seq-len", str(sequence_length),
             "--grid-profile", grid_profile,
+            "--time-step-minutes", str(time_step_minutes),
         ],
     )
 
@@ -309,6 +332,33 @@ def get_ftp_stations():
 @app.route("/api/ftp/times", methods=["GET"])
 def get_ftp_times():
     return jsonify(NOAAFTPAdapter().get_available_times(request.args.get("station", "kokx")))
+
+
+@app.route("/api/dwd/stations", methods=["GET"])
+def get_dwd_stations():
+    try:
+        return jsonify(DWDOpenDataAdapter().list_stations())
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+
+
+@app.route("/api/catalog/summary", methods=["GET"])
+def get_catalog_summary():
+    return jsonify(CATALOG.summary())
+
+
+@app.route("/api/catalog/observations", methods=["GET"])
+def get_catalog_observations():
+    try:
+        return jsonify(
+            CATALOG.list_observations(
+                source=request.args.get("source"),
+                station=request.args.get("station"),
+                limit=request.args.get("limit", 100),
+            )
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 @app.route("/api/predict", methods=["POST"])
@@ -476,6 +526,21 @@ def enqueue_train():
         return jsonify({"success": False, "error": str(exc)}), 400
 
 
+@app.route("/api/task/catalog/rebuild", methods=["POST"])
+def enqueue_catalog_rebuild():
+    job = JOB_STORE.enqueue(
+        "catalog-rebuild",
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "catalog.py"),
+            "rebuild",
+            "--raw-root", app.config["RAW_DATA_DIR"],
+            "--datasets-root", app.config["DATASETS_DIR"],
+        ],
+    )
+    return jsonify({"success": True, "task_id": job["id"], "job": job}), 202
+
+
 @app.route("/api/task/logs/<task_id>", methods=["GET"])
 def get_task_logs(task_id):
     try:
@@ -539,19 +604,33 @@ def export_netcdf():
 
 @app.route("/api/data/preview", methods=["GET"])
 def preview_data():
-    station = request.args.get("station", "KOKX").upper()
+    source_id = request.args.get("source", "noaa-aws")
+    station = request.args.get("station", "KOKX")
     date_value = request.args.get("date")
     if not date_value:
         return jsonify({"error": "Дата не указана"}), 400
     try:
-        import nexradaws
         date = datetime.datetime.strptime(date_value, "%Y-%m-%d")
-        scans = nexradaws.NexradAwsInterface().get_avail_scans(date.year, date.month, date.day, station)
+        if source_id == "dwd-open-data":
+            scans = [
+                scan
+                for scan in DWDOpenDataAdapter().list_scans(station.lower())
+                if scan.scan_time.date() == date.date()
+            ]
+            station = station.upper()
+        else:
+            import nexradaws
+            station = station.upper()
+            scans = nexradaws.NexradAwsInterface().get_avail_scans(
+                date.year, date.month, date.day, station
+            )
         counts = [0] * 24
         for scan in scans:
-            if hasattr(scan, "scan_time"):
-                counts[scan.scan_time.hour] += 1
+            scan_time = getattr(scan, "scan_time", None)
+            if scan_time is not None:
+                counts[scan_time.hour] += 1
         return jsonify({
+            "source": source_id,
             "station": station,
             "date": date_value,
             "total_scans": len(scans),
@@ -559,7 +638,7 @@ def preview_data():
             "has_data": bool(scans),
         })
     except ValueError:
-        return jsonify({"error": "Неверный формат даты. Используйте YYYY-MM-DD"}), 400
+        return jsonify({"error": "Неверный формат даты или код станции"}), 400
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
