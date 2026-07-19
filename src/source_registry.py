@@ -51,6 +51,11 @@ def build_default_source_registry() -> RadarSourceRegistry:
 
     from adapters import DemoRadarAdapter, LocalDirectoryAdapter, NOAAAWSAdapter, NOAAFTPAdapter
     from open_sources import MeteoinfoVisualSource, RainViewerMetadataSource, Wis2RadarCatalog
+    from radar_pipeline import RadarPipeline
+
+    def canonical_noaa_aws(**kwargs: Any):
+        kwargs.setdefault("pipeline", RadarPipeline.canonical())
+        return NOAAAWSAdapter(**kwargs)
 
     registry = RadarSourceRegistry()
     registry.register(
@@ -58,11 +63,23 @@ def build_default_source_registry() -> RadarSourceRegistry:
         NOAAAWSAdapter,
         RadarSourceCapabilities(
             source_id="noaa-aws",
-            native_format="NEXRAD Level II",
+            native_format="NEXRAD Level II / legacy grid",
             quantitative_reflectivity=True,
             raw_polar_volume=True,
             training_allowed=True,
-            notes="Reference quantitative source using the versioned Py-ART pipeline.",
+            notes="Reference quantitative source using the legacy 256x256 pipeline.",
+        ),
+    )
+    registry.register(
+        "noaa-aws-canonical",
+        canonical_noaa_aws,
+        RadarSourceCapabilities(
+            source_id="noaa-aws-canonical",
+            native_format="NEXRAD Level II / canonical 512x512 grid",
+            quantitative_reflectivity=True,
+            raw_polar_volume=True,
+            training_allowed=True,
+            notes="Quantitative 1 km canonical adapter for new datasets.",
         ),
     )
     registry.register(
