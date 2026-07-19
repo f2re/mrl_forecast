@@ -21,7 +21,6 @@ from datasets import RadarSequenceDataset, balanced_sample_weights
 from forecast_quality import advection_forecast, is_uniform_forecast, threshold_metrics_by_lead_time
 from losses import MaskedMSELoss, masked_mse
 from metadata_utils import load_metadata, save_metadata
-from radar_pipeline import PIPELINE_VERSION
 
 
 def temporal_split_indices(sample_count: int, overlap_frames: int, val_fraction: float):
@@ -173,6 +172,7 @@ def _load_datasets(data_dirs, input_length, target_length):
     datasets = []
     provenance = []
     pipeline_versions = set()
+    time_steps = set()
     for data_dir in data_dirs:
         if not os.path.exists(data_dir):
             continue
@@ -187,6 +187,8 @@ def _load_datasets(data_dirs, input_length, target_length):
             continue
         datasets.append(dataset)
         pipeline_versions.add(pipeline_version)
+        if pipeline.get("time_step_minutes") is not None:
+            time_steps.add(int(pipeline["time_step_minutes"]))
         provenance.append(
             {
                 "dataset_id": os.path.basename(data_dir),
@@ -199,10 +201,12 @@ def _load_datasets(data_dirs, input_length, target_length):
             }
         )
         print(f"Loaded dataset from {data_dir} ({len(dataset)} samples)")
-    return datasets, provenance, pipeline_versions
+    return datasets, provenance, pipeline_versions, time_steps
 
 
-def _save_checkpoint(path, model, args, hidden_channels, val_loss, epoch, metrics):
+def _save_checkpoint(
+    path, model, args, hidden_channels, pipeline_version, forecast_step_minutes, val_loss, epoch, metrics
+):
     torch.save(
         {
             "model_state_dict": model.state_dict(),
@@ -210,8 +214,8 @@ def _save_checkpoint(path, model, args, hidden_channels, val_loss, epoch, metric
             "input_length": args.input_length,
             "target_length": args.target_length,
             "hidden_channels": [hidden_channels, hidden_channels],
-            "pipeline_version": PIPELINE_VERSION,
-            "forecast_step_minutes": FORECAST_STEP_MINUTES,
+            "pipeline_version": pipeline_version,
+            "forecast_step_minutes": forecast_step_minutes,
             "model_architecture": "convlstm_baseline",
             "loss": "masked_mse",
             "metrics": {"best_val_loss": val_loss, "epoch": epoch, **metrics},
@@ -242,7 +246,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    datasets, provenance, versions = _load_datasets(
+    datasets, provenance, versions, time_steps = _load_datasets(
         args.data_dirs.split(","),
         args.input_length,
         args.target_length,
@@ -250,9 +254,11 @@ def main():
     if not datasets:
         print("No datasets found")
         return
-    if versions != {PIPELINE_VERSION}:
-        print(f"Incompatible pipeline versions: {sorted(versions)}")
+    if len(versions) != 1 or len(time_steps) != 1:
+        print(f"Datasets must share one pipeline and time step: {sorted(versions)}, {sorted(time_steps)}")
         return
+    pipeline_version = next(iter(versions))
+    forecast_step_minutes = next(iter(time_steps))
 
     try:
         train_dataset, validation_dataset = build_temporal_datasets(datasets, args.val_split)
@@ -301,9 +307,9 @@ def main():
         "sampling": "dry_echo_50_50" if sampler is not None else "natural",
         "hyperparameters": vars(args),
         "training_data": provenance,
-        "pipeline_version": PIPELINE_VERSION,
-        "forecast_step_minutes": FORECAST_STEP_MINUTES,
-        "horizon_minutes": args.target_length * FORECAST_STEP_MINUTES,
+        "pipeline_version": pipeline_version,
+        "forecast_step_minutes": forecast_step_minutes,
+        "horizon_minutes": args.target_length * forecast_step_minutes,
         "status": "training",
         "timestamp_created": datetime.now().isoformat(),
     }
@@ -339,6 +345,8 @@ def main():
                     model,
                     args,
                     hidden_channels,
+                    pipeline_version,
+                    forecast_step_minutes,
                     val_loss,
                     epoch,
                     metrics,
