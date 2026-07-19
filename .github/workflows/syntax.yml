@@ -14,7 +14,9 @@ jobs:
         with:
           python-version: '3.11'
       - name: Compile Python sources
-        run: python -m compileall -q src scripts tests
+        run: |
+          python -m py_compile mrl.py
+          python -m compileall -q src scripts tests
       - name: Check shell scripts
         run: |
           for file in scripts/*.sh; do
