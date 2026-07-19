@@ -6,6 +6,7 @@ import datetime
 import ftplib
 import os
 import pathlib
+import re
 import tempfile
 from abc import ABC, abstractmethod
 from typing import List, Optional
@@ -39,6 +40,7 @@ NEXRAD_STATIONS = {
 }
 
 AWS_PUBLIC_REGION = "us-east-1"
+FILE_TIMESTAMP = re.compile(r"(?P<date>\d{8})[_-]?(?P<time>\d{6})")
 
 
 def configure_public_aws_region() -> None:
@@ -48,15 +50,13 @@ def configure_public_aws_region() -> None:
 
 
 class BaseRadarAdapter(ABC):
-    """Abstract base class for observation and explicitly selected demo adapters."""
-
     @abstractmethod
     def get_latest_sequence(self, seq_length: int) -> RadarSequence:
         """Fetch a timestamped sequence or raise a typed radar error."""
 
 
 class LocalDirectoryAdapter(BaseRadarAdapter):
-    """Load observed BUFR or NumPy grids from a local directory."""
+    """Load trusted BUFR or NumPy observations from a local directory."""
 
     def __init__(
         self,
@@ -70,48 +70,146 @@ class LocalDirectoryAdapter(BaseRadarAdapter):
 
     def get_latest_sequence(self, seq_length: int) -> RadarSequence:
         if not self.directory.exists():
-            raise RadarSourceError(f"Директория {self.directory} не существует.")
-        files = sorted(
-            [path for path in self.directory.iterdir() if path.suffix in (".bufr", ".npy", ".npz")],
-            key=os.path.getmtime,
-            reverse=True,
-        )
-        if len(files) < seq_length:
+            raise RadarSourceError(f"Директория {self.directory} не существует")
+
+        paths = [
+            path
+            for path in self.directory.iterdir()
+            if path.is_file() and path.suffix.lower() in (".bufr", ".npy", ".npz")
+        ]
+        frames: list[RadarFrame] = []
+        errors = []
+        for path in paths:
+            try:
+                frames.extend(self._load_frames(path))
+            except RadarDecodeError as exc:
+                errors.append(f"{path.name}: {exc}")
+
+        frames.sort(key=lambda frame: frame.timestamp_utc)
+        if len(frames) < seq_length:
+            details = "; ".join(errors[-3:]) if errors else "нет дополнительных диагностик"
             raise RadarSourceError(
-                f"В папке {self.directory} только {len(files)} файлов, требуется {seq_length}."
+                f"В {self.directory} найдено {len(frames)} доверенных сроков, "
+                f"требуется {seq_length}. {details}"
             )
-
-        frames = [self._load_file(path) for path in files[:seq_length][::-1]]
+        selected = frames[-seq_length:]
         return RadarSequence(
-            frames=frames,
+            frames=selected,
             source="local",
-            message="Данные загружены из локальной папки.",
+            message=f"Локальная папка: {len(selected)} наблюдаемых сроков",
         )
 
-    def _load_file(self, path: pathlib.Path) -> RadarFrame:
-        timestamp = datetime.datetime.fromtimestamp(path.stat().st_mtime, datetime.UTC)
+    def _load_frames(self, path: pathlib.Path) -> list[RadarFrame]:
         try:
-            if path.suffix == ".bufr":
+            if path.suffix.lower() == ".npz":
+                return self._load_npz_frames(path)
+            if path.suffix.lower() == ".bufr":
                 grid = self.decoder.decode(str(path))
-            elif path.suffix == ".npz":
-                grid = np.load(path)["arr_0"]
             else:
-                grid = np.load(path)
-            if grid.ndim == 3:
-                grid = grid[-1]
-            if grid.ndim != 2:
-                raise RadarDecodeError(f"Expected a 2D grid in {path}, got shape {grid.shape}")
-            return self.pipeline.frame_from_grid(
-                grid,
-                timestamp_utc=timestamp,
-                station="LOCAL",
-                source="local",
-                provenance={"path": str(path)},
-            )
+                grid = np.load(path, allow_pickle=False)
+            if np.asarray(grid).ndim != 2:
+                raise RadarDecodeError(
+                    f"Файл {path.name} без timestamps_utc должен содержать один растр [H,W]"
+                )
+            return [self._frame_from_array(grid, self._timestamp_from_name(path), path)]
         except RadarDecodeError:
             raise
         except Exception as exc:
-            raise RadarDecodeError(f"Failed to load local radar grid {path}: {exc}") from exc
+            raise RadarDecodeError(f"Failed to load local radar data {path}: {exc}") from exc
+
+    def _load_npz_frames(self, path: pathlib.Path) -> list[RadarFrame]:
+        with np.load(path, allow_pickle=False) as payload:
+            if "reflectivity" in payload:
+                values = np.asarray(payload["reflectivity"], dtype=np.float32)
+            elif "arr_0" in payload:
+                values = np.asarray(payload["arr_0"], dtype=np.float32)
+            else:
+                raise RadarDecodeError(f"NPZ {path.name} has no reflectivity or arr_0 array")
+
+            if values.ndim == 2:
+                values = values[np.newaxis, ...]
+            if values.ndim != 3:
+                raise RadarDecodeError(f"Expected [T,H,W] in {path.name}, got {values.shape}")
+
+            if "valid_mask" in payload:
+                masks = np.asarray(payload["valid_mask"], dtype=bool)
+                if masks.ndim == 2:
+                    masks = masks[np.newaxis, ...]
+            else:
+                masks = np.isfinite(values)
+            if masks.shape != values.shape:
+                raise RadarDecodeError(
+                    f"valid_mask shape {masks.shape} does not match reflectivity {values.shape}"
+                )
+
+            if "timestamps_utc" in payload:
+                raw_timestamps = list(payload["timestamps_utc"])
+                if len(raw_timestamps) != values.shape[0]:
+                    raise RadarDecodeError("timestamps_utc length does not match sequence length")
+                timestamps = [self._parse_timestamp(value) for value in raw_timestamps]
+            elif values.shape[0] == 1:
+                timestamps = [self._timestamp_from_name(path)]
+            else:
+                raise RadarDecodeError(
+                    f"Sequence {path.name} requires timestamps_utc; file mtime is not accepted"
+                )
+
+            return [
+                self._frame_from_array(values[index], timestamps[index], path, masks[index], index)
+                for index in range(values.shape[0])
+            ]
+
+    def _frame_from_array(
+        self,
+        grid: np.ndarray,
+        timestamp: datetime.datetime,
+        path: pathlib.Path,
+        valid_mask: Optional[np.ndarray] = None,
+        sequence_index: Optional[int] = None,
+    ) -> RadarFrame:
+        values = np.asarray(grid, dtype=np.float32)
+        expected = (self.pipeline.config.height, self.pipeline.config.width)
+        if values.shape != expected:
+            raise RadarDecodeError(
+                f"Grid {values.shape} in {path.name} is incompatible with pipeline {expected}"
+            )
+        mask = np.isfinite(values) if valid_mask is None else np.asarray(valid_mask, dtype=bool)
+        if mask.shape != values.shape:
+            raise RadarDecodeError("Local valid_mask does not match grid shape")
+        masked_grid = np.ma.array(values, mask=~mask)
+        provenance = {"path": str(path)}
+        if sequence_index is not None:
+            provenance["sequence_index"] = sequence_index
+        return self.pipeline.frame_from_grid(
+            masked_grid,
+            timestamp_utc=timestamp,
+            station="LOCAL",
+            source="local",
+            provenance=provenance,
+        )
+
+    @staticmethod
+    def _parse_timestamp(value) -> datetime.datetime:
+        text = str(value.decode("utf-8") if isinstance(value, bytes) else value)
+        try:
+            timestamp = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise RadarDecodeError(f"Invalid timestamp {text}") from exc
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=datetime.UTC)
+        return timestamp.astimezone(datetime.UTC)
+
+    @staticmethod
+    def _timestamp_from_name(path: pathlib.Path) -> datetime.datetime:
+        match = FILE_TIMESTAMP.search(path.name)
+        if not match:
+            raise RadarDecodeError(
+                f"Observation timestamp is unavailable for {path.name}; file mtime is not accepted"
+            )
+        return datetime.datetime.strptime(
+            match.group("date") + match.group("time"),
+            "%Y%m%d%H%M%S",
+        ).replace(tzinfo=datetime.UTC)
 
 
 class NOAAAWSAdapter(BaseRadarAdapter):
@@ -183,7 +281,7 @@ class NOAAAWSAdapter(BaseRadarAdapter):
             scans = [scan for scan in scans if scan.scan_time <= end_time]
         scans = sorted(scans, key=lambda scan: scan.scan_time)
         if not scans:
-            raise RadarSourceError("Нет доступных сканов AWS.")
+            raise RadarSourceError("Нет доступных сканов AWS")
 
         selected = [scans[-1]]
         remaining = scans[:-1]
@@ -198,7 +296,7 @@ class NOAAAWSAdapter(BaseRadarAdapter):
             remaining = [scan for scan in remaining if scan.scan_time < candidate.scan_time]
         if len(selected) != seq_length:
             raise RadarSourceError(
-                f"Недостаточно регулярных AWS сканов: найдено {len(selected)}, требуется {seq_length}."
+                f"Недостаточно регулярных AWS сканов: найдено {len(selected)}, требуется {seq_length}"
             )
         return sorted(selected, key=lambda scan: scan.scan_time)
 
@@ -285,15 +383,15 @@ class NOAAFTPAdapter(BaseRadarAdapter):
     @staticmethod
     def _select_files(files: list[str], seq_length: int, end_file_id: str) -> list[str]:
         if len(files) < seq_length:
-            raise RadarSourceError(f"Недостаточно FTP файлов: найдено {len(files)}, требуется {seq_length}.")
+            raise RadarSourceError(f"Недостаточно FTP файлов: найдено {len(files)}, требуется {seq_length}")
         if end_file_id == "latest":
             return files[-seq_length:]
         if end_file_id not in files:
-            raise RadarSourceError(f"FTP файл {end_file_id} не найден.")
+            raise RadarSourceError(f"FTP файл {end_file_id} не найден")
         end_index = files.index(end_file_id)
         start_index = end_index - seq_length + 1
         if start_index < 0:
-            raise RadarSourceError(f"Недостаточно истории перед FTP файлом {end_file_id}.")
+            raise RadarSourceError(f"Недостаточно истории перед FTP файлом {end_file_id}")
         return files[start_index : end_index + 1]
 
     def _download_frames(self, ftp: ftplib.FTP, files: list[str], station: str) -> List[RadarFrame]:
@@ -330,5 +428,5 @@ class RainViewerAdapter(BaseRadarAdapter):
 
     def get_latest_sequence(self, seq_length: int) -> RadarSequence:
         raise RadarSourceError(
-            "RainViewer operational ingestion is disabled until tile coordinates and palette decoding are configured."
+            "RainViewer operational ingestion is disabled until tile coordinates and palette decoding are configured"
         )
