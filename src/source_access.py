@@ -16,6 +16,7 @@ import pathlib
 import stat
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
@@ -25,6 +26,15 @@ from radar_contract import RadarSourceCapabilities
 DEFAULT_CREDENTIAL_FILE = (
     pathlib.Path.home() / ".config" / "mrl_forecast" / "credentials.json"
 )
+SENSITIVE_FIELD_NAMES = {
+    "authorization",
+    "api_key",
+    "apikey",
+    "token",
+    "secret",
+    "password",
+    "temporarydownloadurl",
+}
 
 
 class SourceAccessError(RuntimeError):
@@ -80,7 +90,7 @@ class SourceProbeResult:
             "can_download": self.can_download,
             "credential_state": self.credential_state,
             "message": self.message,
-            "sample": self.sample,
+            "sample": sanitise_probe_value(self.sample),
             "checked_at_utc": self.checked_at_utc,
         }
 
@@ -153,6 +163,33 @@ class CredentialStore:
         if not capabilities.credential_env:
             return "not_required"
         return "present" if self.get(capabilities.credential_env) else "missing"
+
+
+def sanitise_url(value: str) -> str:
+    parts = urlsplit(value)
+    if not parts.scheme or not parts.netloc:
+        return value
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+
+def sanitise_probe_value(value: Any, field_name: str = "") -> Any:
+    """Remove credentials and signed query strings from persistent probe reports."""
+
+    normalised_name = field_name.lower().replace("-", "").replace("_", "")
+    if normalised_name in SENSITIVE_FIELD_NAMES:
+        return "<redacted>"
+    if isinstance(value, dict):
+        return {
+            str(key): sanitise_probe_value(item, str(key))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [sanitise_probe_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [sanitise_probe_value(item) for item in value]
+    if isinstance(value, str) and field_name.lower() in {"url", "href"}:
+        return sanitise_url(value)
+    return value
 
 
 def parse_utc(value: Any) -> Optional[datetime.datetime]:
