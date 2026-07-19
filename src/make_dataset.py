@@ -14,11 +14,13 @@ import numpy as np
 from config import FORECAST_STEP_MINUTES
 from event_catalog import class_counts, summarize_sequence
 from metadata_utils import load_metadata, save_metadata
+from radar_catalog import RadarCatalog
 from radar_pipeline import RadarDecodeError, RadarPipeline, RadarPipelineConfig
 
 NEXRAD_TIMESTAMP = re.compile(r"^[A-Z0-9]{4}(\d{8})_(\d{6})")
 DWD_TIMESTAMP = re.compile(r"DBZH_00-(\d{12})", re.IGNORECASE)
 SAMPLE_FORMAT = "npz-reflectivity-mask-v1"
+SPLIT_BLOCK_HOURS = 3
 
 
 def _timestamp_from_path(path: pathlib.Path) -> datetime.datetime:
@@ -39,6 +41,13 @@ def _timestamp_from_path(path: pathlib.Path) -> datetime.datetime:
     raise RadarDecodeError(
         f"Observation timestamp is not encoded in {path.name}; file mtime is not accepted"
     )
+
+
+def _split_group(timestamp: datetime.datetime, segment_index: int) -> str:
+    """Return a chronological block used to keep adjacent windows together."""
+
+    block_hour = (timestamp.hour // SPLIT_BLOCK_HOURS) * SPLIT_BLOCK_HOURS
+    return f"{timestamp:%Y%m%d}_s{segment_index:03d}_h{block_hour:02d}"
 
 
 def _pipeline_for_legacy_arguments(
@@ -128,7 +137,7 @@ def process_archive_directory(
     time_step_minutes: int = FORECAST_STEP_MINUTES,
 ):
     """Grid observed radar files and save masked sequences plus provenance metadata."""
-    archive_path = pathlib.Path(archive_dir)
+    archive_path = pathlib.Path(archive_dir).resolve()
     files = sorted(
         path
         for path in archive_path.iterdir()
@@ -137,7 +146,7 @@ def process_archive_directory(
     if not files:
         raise ValueError(f"No valid radar files found in {archive_dir}")
 
-    source_meta = load_metadata(archive_dir)
+    source_meta = load_metadata(str(archive_path))
     if not source_meta or source_meta.get("type") != "raw_data":
         raise ValueError(f"Raw archive metadata is missing or invalid in {archive_dir}")
     if source_meta.get("status") != "completed":
@@ -166,13 +175,14 @@ def process_archive_directory(
     output_dir.mkdir(parents=True, exist_ok=True)
     metadata = {
         "type": "dataset",
-        "source_path": archive_dir,
+        "source_path": str(archive_path),
         "source_type": source_type,
         "station": station,
         "sequence_length": sequence_length,
         "sample_format": SAMPLE_FORMAT,
         "grid_profile": grid_profile,
         "time_step_minutes": time_step_minutes,
+        "split_block_hours": SPLIT_BLOCK_HOURS,
         "pipeline": radar_pipeline.metadata(),
         "status": "processing",
         "sample_count": 0,
@@ -232,6 +242,7 @@ def process_archive_directory(
                     "file": filename,
                     "format": SAMPLE_FORMAT,
                     "segment": segment_index,
+                    "split_group": _split_group(selected[0].timestamp_utc, segment_index),
                     "frame_indices": [frame_indices[id(frame)] for frame in selected],
                     "start_time_utc": selected[0].timestamp_utc.isoformat(),
                     "end_time_utc": selected[-1].timestamp_utc.isoformat(),
@@ -246,6 +257,7 @@ def process_archive_directory(
         raise ValueError("No regular observed sequences after cadence quality control")
 
     counts = class_counts(item["event_class"] for item in sequences)
+    split_groups = sorted({item["split_group"] for item in sequences})
     manifest = {
         "pipeline": radar_pipeline.metadata(),
         "sample_format": SAMPLE_FORMAT,
@@ -254,6 +266,7 @@ def process_archive_directory(
         "sequences": sequences,
         "decode_errors": errors,
         "regular_segment_count": len(segments),
+        "split_group_count": len(split_groups),
         "class_counts": counts,
     }
     with open(output_dir / "manifest.json", "w", encoding="utf-8") as file:
@@ -264,9 +277,20 @@ def process_archive_directory(
     metadata["observed_frame_count"] = len(frames)
     metadata["selected_frame_count"] = sum(len(segment) for segment in segments)
     metadata["regular_segment_count"] = len(segments)
+    metadata["split_group_count"] = len(split_groups)
     metadata["decode_error_count"] = len(errors)
     metadata["class_counts"] = counts
     save_metadata(str(output_dir), metadata)
+    try:
+        catalog = RadarCatalog()
+        catalog.index_archive(str(archive_path))
+        catalog.index_dataset(str(output_dir))
+        metadata["catalog_indexed"] = True
+    except Exception as exc:
+        metadata["catalog_indexed"] = False
+        metadata["catalog_error"] = str(exc)
+    save_metadata(str(output_dir), metadata)
+
     print(f"Saved {len(sequences)} masked sequences to {output_dir}")
     return str(output_dir)
 
