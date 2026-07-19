@@ -2,1018 +2,400 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="icon" href="data:,">
-    <title>MRL Forecast Pro | Метеорологическая ИИ-платформа</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>MRL Forecast</title>
     <style>
         :root {
-            --sidebar-bg: #1e293b;
-            --sidebar-color: #f8fafc;
-            --primary-blue: #3b82f6;
-            --bg-light: #f1f5f9;
+            color-scheme: light;
+            --bg: #f3f4f7;
+            --surface: rgba(255, 255, 255, .82);
+            --surface-solid: #fff;
+            --text: #17181b;
+            --muted: #6e7078;
+            --line: rgba(20, 22, 28, .09);
+            --accent: #087bfa;
+            --accent-soft: rgba(8, 123, 250, .12);
+            --good: #1f9d55;
+            --warn: #d98200;
+            --bad: #d93b3b;
+            --shadow: 0 16px 50px rgba(27, 33, 48, .10);
+            --radius: 22px;
         }
+        [data-theme="dark"] {
+            color-scheme: dark;
+            --bg: #101114;
+            --surface: rgba(29, 30, 35, .84);
+            --surface-solid: #1d1e23;
+            --text: #f6f6f8;
+            --muted: #a5a6ad;
+            --line: rgba(255, 255, 255, .10);
+            --accent-soft: rgba(8, 123, 250, .22);
+            --shadow: 0 18px 55px rgba(0, 0, 0, .32);
+        }
+        * { box-sizing: border-box; }
         body {
-            background-color: var(--bg-light);
-            font-family: 'Inter', system-ui, -apple-system, sans-serif;
-            overflow-x: hidden;
-        }
-        
-        /* Animations */
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes slideIn { from { transform: translateX(-20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-        
-        .animate-fade-in { animation: fadeIn 0.4s ease-out forwards; }
-        .animate-slide-in { animation: slideIn 0.3s ease-out forwards; }
-        
-        .preview-bar {
-            height: 30px;
-            background: #e2e8f0;
-            border-radius: 4px;
-            overflow: hidden;
-            display: flex;
-            margin-bottom: 2px;
-        }
-        .preview-chunk { flex: 1; border-right: 1px solid rgba(255,255,255,0.2); transition: all 0.2s; }
-        .preview-chunk:hover { opacity: 0.8; cursor: pointer; }
-        .chunk-has-data { background: #10b981; }
-        .chunk-no-data { background: #ef4444; }
-        
-        .sidebar {
-            width: 260px;
-            height: 100vh;
-            position: fixed;
-            background: var(--sidebar-bg);
-            color: var(--sidebar-color);
-            padding: 1.5rem;
-            z-index: 1000;
-            display: flex;
-            flex-direction: column;
-        }
-        .main-container {
-            margin-left: 260px;
-            padding: 2rem;
+            margin: 0;
+            background:
+                radial-gradient(circle at 12% 0%, rgba(80, 150, 255, .16), transparent 28rem),
+                radial-gradient(circle at 100% 100%, rgba(106, 94, 255, .11), transparent 32rem),
+                var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
             min-height: 100vh;
         }
-        .nav-link {
-            color: #94a3b8;
-            padding: 0.75rem 1rem;
-            border-radius: 0.5rem;
-            margin-bottom: 0.5rem;
-            display: flex;
-            align-items: center;
-            transition: all 0.2s;
+        button, input, select { font: inherit; }
+        button { cursor: pointer; }
+        .app { display: grid; grid-template-columns: 245px minmax(0, 1fr); min-height: 100vh; }
+        .sidebar {
+            position: sticky; top: 0; height: 100vh; padding: 24px 16px;
+            border-right: 1px solid var(--line); background: rgba(245, 246, 249, .68);
+            backdrop-filter: blur(28px); z-index: 20;
         }
-        .nav-link:hover, .nav-link.active {
-            color: white;
-            background: rgba(255,255,255,0.1);
+        [data-theme="dark"] .sidebar { background: rgba(20, 21, 25, .70); }
+        .brand { display: flex; align-items: center; gap: 12px; padding: 4px 10px 26px; }
+        .brand-mark {
+            width: 42px; height: 42px; border-radius: 13px; display: grid; place-items: center;
+            color: white; font-size: 22px; background: linear-gradient(145deg, #0792ff, #635bff);
+            box-shadow: 0 8px 22px rgba(40, 113, 255, .30);
         }
-        .nav-link.active {
-            background: var(--primary-blue);
+        .brand strong { display: block; font-size: 17px; }
+        .brand small { color: var(--muted); }
+        .nav { display: grid; gap: 5px; }
+        .nav button {
+            border: 0; background: transparent; color: var(--muted); border-radius: 13px;
+            padding: 11px 12px; text-align: left; display: flex; gap: 11px; align-items: center;
         }
-        .nav-link i { width: 20px; margin-right: 12px; }
-        
+        .nav button:hover { background: var(--line); color: var(--text); }
+        .nav button.active { background: var(--accent-soft); color: var(--accent); font-weight: 650; }
+        .nav .icon { width: 20px; text-align: center; font-size: 17px; }
+        .sidebar-footer { position: absolute; left: 16px; right: 16px; bottom: 22px; }
+        .model-chip { padding: 12px; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); }
+        .model-chip small { display: block; color: var(--muted); margin-bottom: 3px; }
+        .model-chip span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        main { min-width: 0; padding: 28px 34px 54px; }
+        .topbar { display: flex; justify-content: space-between; gap: 20px; align-items: center; margin-bottom: 24px; }
+        .topbar h1 { margin: 0; font-size: clamp(26px, 3vw, 38px); letter-spacing: -.04em; }
+        .topbar p { color: var(--muted); margin: 5px 0 0; }
+        .top-actions { display: flex; gap: 9px; align-items: center; }
+        .icon-button, .button {
+            border: 1px solid var(--line); color: var(--text); background: var(--surface);
+            border-radius: 13px; min-height: 42px; padding: 0 15px; box-shadow: 0 4px 16px rgba(0,0,0,.04);
+        }
+        .icon-button { width: 42px; padding: 0; }
+        .button.primary { background: var(--accent); color: white; border-color: transparent; }
+        .button.danger { color: var(--bad); }
+        .button:disabled { opacity: .45; cursor: default; }
+        .pane { display: none; animation: appear .22s ease; }
+        .pane.active { display: block; }
+        @keyframes appear { from { opacity: 0; transform: translateY(5px); } }
+        .grid { display: grid; gap: 18px; }
+        .grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
         .card {
-            border: none;
-            border-radius: 0.75rem;
-            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+            background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+            box-shadow: var(--shadow); backdrop-filter: blur(24px); overflow: hidden;
         }
-        .card-header { background: white; border-bottom: 1px solid #e2e8f0; font-weight: 600; }
-        
-        .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
-        .bg-running { background: #3b82f6; animation: pulse 2s infinite; }
-        .bg-completed { background: #10b981; }
-        .bg-failed { background: #ef4444; }
-        
-        @keyframes pulse {
-            0% { opacity: 1; }
-            50% { opacity: 0.4; }
-            100% { opacity: 1; }
+        .card-body { padding: 20px; }
+        .card-head { padding: 18px 20px 0; display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+        .card-head h2, .card-head h3 { margin: 0; letter-spacing: -.02em; }
+        .card-head h2 { font-size: 20px; }
+        .card-head h3 { font-size: 16px; }
+        .metric { padding: 20px; }
+        .metric small { color: var(--muted); }
+        .metric strong { display: block; font-size: 32px; margin-top: 7px; letter-spacing: -.04em; }
+        .metric .hint { color: var(--muted); font-size: 13px; margin-top: 5px; }
+        .section-title { display: flex; justify-content: space-between; align-items: end; gap: 15px; margin: 30px 2px 13px; }
+        .section-title h2 { margin: 0; font-size: 21px; }
+        .section-title p { margin: 4px 0 0; color: var(--muted); }
+        .list { display: grid; gap: 10px; }
+        .list-item {
+            border: 1px solid var(--line); border-radius: 16px; padding: 14px 15px;
+            display: flex; align-items: center; justify-content: space-between; gap: 14px; background: rgba(255,255,255,.18);
         }
-        
-        .log-container {
-            background: #0f172a;
-            color: #38bdf8;
-            padding: 1rem;
-            border-radius: 0.5rem;
-            font-family: 'Fira Code', monospace;
-            font-size: 0.8rem;
-            height: 300px;
-            overflow-y: auto;
-            white-space: pre-wrap;
+        .list-item .meta { min-width: 0; }
+        .list-item .meta strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .list-item .meta small { color: var(--muted); }
+        .row-actions { display: flex; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
+        .mini { min-height: 33px; padding: 0 10px; border-radius: 10px; font-size: 13px; }
+        .badge { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 5px 9px; font-size: 12px; font-weight: 650; background: var(--line); }
+        .badge.good { color: var(--good); background: rgba(31,157,85,.12); }
+        .badge.warn { color: var(--warn); background: rgba(217,130,0,.13); }
+        .badge.bad { color: var(--bad); background: rgba(217,59,59,.12); }
+        .badge.info { color: var(--accent); background: var(--accent-soft); }
+        form { display: grid; gap: 14px; }
+        .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+        label { display: grid; gap: 7px; color: var(--muted); font-size: 13px; font-weight: 600; }
+        input, select {
+            width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 11px 12px;
+            color: var(--text); background: var(--surface-solid); outline: none;
         }
-        
-        #loadingOverlay {
-            display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(255,255,255,0.8); z-index: 9999;
-            flex-direction: column; align-items: center; justify-content: center;
+        input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+        .check { display: flex; grid-template-columns: none; align-items: center; gap: 9px; color: var(--text); }
+        .check input { width: 18px; height: 18px; }
+        .empty { color: var(--muted); text-align: center; padding: 34px 12px; }
+        .source-card .symbol { font-size: 28px; }
+        .source-card h3 { margin: 12px 0 4px; }
+        .source-card p { color: var(--muted); min-height: 40px; font-size: 13px; }
+        .source-flags { display: flex; gap: 6px; flex-wrap: wrap; }
+        .forecast-layout { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 18px; }
+        .viewer { min-height: 590px; display: flex; flex-direction: column; }
+        .viewer-stage { flex: 1; min-height: 460px; background: #dfe3e9; display: grid; place-items: center; overflow: hidden; }
+        [data-theme="dark"] .viewer-stage { background: #090a0d; }
+        .viewer-stage img { display: none; width: 100%; height: 100%; object-fit: contain; }
+        .viewer-stage .placeholder { color: var(--muted); text-align: center; padding: 30px; }
+        .viewer-controls { padding: 14px 18px 18px; display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: center; }
+        .viewer-controls input { padding: 0; }
+        .frame-label { grid-column: 1 / -1; font-weight: 650; text-align: center; }
+        .diagnostics { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 13px; }
+        .dataset-picker { max-height: 310px; overflow: auto; display: grid; gap: 8px; padding-right: 3px; }
+        .dataset-option { display: flex; gap: 10px; align-items: flex-start; padding: 11px; border: 1px solid var(--line); border-radius: 13px; }
+        .dataset-option input { width: 18px; margin-top: 2px; }
+        .job-line { display: grid; grid-template-columns: 120px 1fr auto; gap: 12px; align-items: center; }
+        .progress-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); display: inline-block; }
+        .status-running .progress-dot, .status-cancelling .progress-dot { background: var(--accent); animation: pulse 1.2s infinite; }
+        .status-completed .progress-dot { background: var(--good); }
+        .status-failed .progress-dot, .status-interrupted .progress-dot { background: var(--bad); }
+        @keyframes pulse { 50% { opacity: .3; transform: scale(.8); } }
+        dialog { border: 0; padding: 0; border-radius: 22px; width: min(760px, calc(100vw - 30px)); background: var(--surface-solid); color: var(--text); box-shadow: 0 30px 90px rgba(0,0,0,.30); }
+        dialog::backdrop { background: rgba(0,0,0,.35); backdrop-filter: blur(8px); }
+        .dialog-head { display: flex; justify-content: space-between; align-items: center; padding: 16px 18px; border-bottom: 1px solid var(--line); }
+        .dialog-head h3 { margin: 0; }
+        pre { margin: 0; padding: 18px; min-height: 260px; max-height: 60vh; overflow: auto; background: #111318; color: #d8e8ff; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+        .toast {
+            position: fixed; right: 24px; bottom: 24px; max-width: 380px; padding: 13px 16px;
+            border-radius: 14px; color: white; background: #25272d; box-shadow: var(--shadow);
+            transform: translateY(20px); opacity: 0; pointer-events: none; transition: .2s; z-index: 100;
         }
-        
-        .radar-img-container img {
-            width: 100%; height: auto; border-radius: 0.5rem; background: #000;
-            transition: opacity 0.2s ease-in-out;
+        .toast.show { transform: none; opacity: 1; }
+        .toast.error { background: var(--bad); }
+        .mobile-nav { display: none; }
+        @media (max-width: 1050px) {
+            .grid.cols-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .forecast-layout { grid-template-columns: 1fr; }
+            .viewer { min-height: 520px; }
         }
-        #radarPlayerImg {
-            transition: opacity 0.1s ease-in-out;
-        }
-        .section-pane { display: none; }
-        .section-pane.active { display: block; }
-
-        /* Spinner for selects */
-        .select-loading {
-            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='xMidYMid'%3e%3ccircle cx='50' cy='50' fill='none' stroke='%233b82f6' stroke-width='10' r='35' stroke-dasharray='164.93361431346415 56.97787143782138'%3e%3canimateTransform attributeName='transform' type='rotate' repeatCount='indefinite' dur='1s' values='0 50 50;360 50 50' keyTimes='0;1'/%3e%3c/circle%3e%3c/svg%3e");
-            background-repeat: no-repeat;
-            background-position: right 2.5rem center;
-            background-size: 1.2rem;
+        @media (max-width: 760px) {
+            .app { display: block; }
+            .sidebar { display: none; }
+            main { padding: 20px 15px 100px; }
+            .topbar { align-items: flex-start; }
+            .topbar p { font-size: 13px; }
+            .grid.cols-2, .grid.cols-3, .form-grid { grid-template-columns: 1fr; }
+            .metric strong { font-size: 27px; }
+            .viewer-stage { min-height: 360px; }
+            .job-line { grid-template-columns: 1fr; }
+            .mobile-nav {
+                display: flex; position: fixed; z-index: 50; left: 10px; right: 10px; bottom: max(10px, env(safe-area-inset-bottom));
+                overflow-x: auto; padding: 8px; gap: 4px; border: 1px solid var(--line); border-radius: 20px;
+                background: var(--surface); backdrop-filter: blur(28px); box-shadow: var(--shadow);
+            }
+            .mobile-nav button { flex: 1 0 64px; border: 0; background: transparent; color: var(--muted); border-radius: 13px; padding: 8px 6px; font-size: 11px; }
+            .mobile-nav button span { display: block; font-size: 18px; margin-bottom: 3px; }
+            .mobile-nav button.active { background: var(--accent-soft); color: var(--accent); }
+            .toast { left: 15px; right: 15px; bottom: 94px; }
         }
     </style>
 </head>
 <body>
+<div class="app">
+    <aside class="sidebar">
+        <div class="brand"><div class="brand-mark">⌁</div><div><strong>MRL Forecast</strong><small>Radar intelligence</small></div></div>
+        <nav class="nav" id="desktopNav">
+            <button class="active" data-pane="overview"><span class="icon">⌂</span>Обзор</button>
+            <button data-pane="forecast"><span class="icon">◉</span>Прогноз</button>
+            <button data-pane="sources"><span class="icon">⌁</span>Источники</button>
+            <button data-pane="data"><span class="icon">▦</span>Архив</button>
+            <button data-pane="training"><span class="icon">△</span>Обучение</button>
+            <button data-pane="jobs"><span class="icon">◷</span>Задания</button>
+            <button data-pane="models"><span class="icon">◇</span>Модели</button>
+        </nav>
+        <div class="sidebar-footer"><div class="model-chip"><small>Активная модель</small><span id="activeModel">не загружена</span></div></div>
+    </aside>
 
-<div id="loadingOverlay">
-    <div class="spinner-border text-primary" style="width: 3rem; height: 3rem;"></div>
-    <h5 class="mt-3">Обработка...</h5>
+    <main>
+        <header class="topbar">
+            <div><h1 id="pageTitle">Обзор</h1><p id="pageSubtitle">Состояние системы и последние операции</p></div>
+            <div class="top-actions"><button class="icon-button" id="refreshBtn" title="Обновить">↻</button><button class="icon-button" id="themeBtn" title="Тема">◐</button></div>
+        </header>
+
+        <section class="pane active" id="pane-overview">
+            <div class="grid cols-3">
+                <div class="card metric"><small>Сырые архивы</small><strong id="metricRaw">—</strong><div class="hint">доступно для подготовки</div></div>
+                <div class="card metric"><small>Датасеты</small><strong id="metricDatasets">—</strong><div class="hint">masked NPZ sequences</div></div>
+                <div class="card metric"><small>Модели</small><strong id="metricModels">—</strong><div class="hint">в реестре</div></div>
+            </div>
+            <div class="section-title"><div><h2>Последние задания</h2><p>Загрузка, предобработка и обучение</p></div><button class="button mini" data-go="jobs">Все задания</button></div>
+            <div class="card"><div class="card-body"><div class="list" id="recentJobs"></div></div></div>
+            <div class="section-title"><div><h2>Контроль источников</h2><p>Количественные и визуальные контуры разделены</p></div><button class="button mini" data-go="sources">Подробнее</button></div>
+            <div class="grid cols-3" id="overviewSources"></div>
+        </section>
+
+        <section class="pane" id="pane-forecast">
+            <div class="forecast-layout">
+                <div class="card"><div class="card-head"><h2>Новый прогноз</h2></div><div class="card-body">
+                    <form id="forecastForm">
+                        <label>Источник<select name="source_type" id="forecastSource"><option value="aws">NOAA AWS Level II</option><option value="local">Локальная папка</option><option value="upload">Загрузить NPZ/NPY</option><option value="demo">DEMO</option><option value="ftp">NOAA FTP legacy</option></select></label>
+                        <label id="stationField">Радиолокатор<select name="ftp_station" id="forecastStation"><option value="kokx">KOKX</option></select></label>
+                        <label id="localField" hidden>Локальная папка<input name="local_path" value="{{ local_dir }}"></label>
+                        <label id="uploadField" hidden>Файл<input type="file" name="file" accept=".npz,.npy"></label>
+                        <button class="button primary" type="submit">Рассчитать прогноз</button>
+                    </form>
+                    <div class="diagnostics" id="diagnostics"></div>
+                </div></div>
+                <div class="card viewer"><div class="card-head"><h2>Поле отражаемости</h2><button class="button mini" id="exportBtn" disabled>Экспорт NetCDF</button></div>
+                    <div class="viewer-stage"><div class="placeholder" id="viewerPlaceholder">Выберите модель и источник, затем запустите прогноз</div><img id="viewerImage" alt="Карта отражаемости"></div>
+                    <div class="viewer-controls"><button class="icon-button" id="playBtn" disabled>▶</button><input type="range" id="frameSlider" min="0" max="0" value="0" disabled><div class="frame-label" id="frameLabel">Нет данных</div></div>
+                </div>
+            </div>
+        </section>
+
+        <section class="pane" id="pane-sources">
+            <div class="section-title"><div><h2>Реестр источников</h2><p>Статус пригодности задаётся явно</p></div></div>
+            <div class="grid cols-3" id="sourcesGrid"></div>
+        </section>
+
+        <section class="pane" id="pane-data">
+            <div class="grid cols-2">
+                <div class="card"><div class="card-head"><h2>Загрузить архив</h2></div><div class="card-body"><form id="downloadForm">
+                    <label>Станция<select name="station" id="downloadStation"><option value="KOKX">KOKX</option></select></label>
+                    <div class="form-grid"><label>Дата<input type="date" name="date" id="downloadDate" required></label><label>Число сканов<input type="number" name="count" value="100" min="1" max="2000"></label></div>
+                    <button class="button primary" type="submit">Поставить загрузку в очередь</button>
+                </form></div></div>
+                <div class="card"><div class="card-head"><h2>Подготовить датасет</h2></div><div class="card-body"><form id="prepareForm">
+                    <label>Архив<select name="archive_dir" id="prepareArchive" required><option value="">Выберите архив</option></select></label>
+                    <div class="form-grid"><label>Длина sequence<input type="number" name="seq_len" value="8" min="2" max="48"></label><label>Сетка<select name="grid_profile"><option value="canonical">512×512 · 1 км</option><option value="legacy">256×256 · legacy</option></select></label></div>
+                    <button class="button primary" type="submit">Запустить предобработку</button>
+                </form></div></div>
+            </div>
+            <div class="section-title"><div><h2>Архив наблюдений</h2><p>Исходные файлы и provenance</p></div></div>
+            <div class="card"><div class="card-body"><div class="list" id="rawList"></div></div></div>
+        </section>
+
+        <section class="pane" id="pane-training">
+            <div class="grid cols-2">
+                <div class="card"><div class="card-head"><h2>Выборка</h2></div><div class="card-body"><div class="dataset-picker" id="datasetPicker"></div></div></div>
+                <div class="card"><div class="card-head"><h2>Параметры обучения</h2></div><div class="card-body"><form id="trainForm">
+                    <div class="form-grid"><label>Эпохи<input type="number" name="epochs" value="20" min="1"></label><label>Batch size<input type="number" name="batch_size" value="1" min="1" max="64"></label></div>
+                    <div class="form-grid"><label>Кадров истории<input type="number" name="input_length" value="4" min="2" max="24"></label><label>Кадров прогноза<input type="number" name="lead_time" value="4" min="1" max="24"></label></div>
+                    <div class="form-grid"><label>Learning rate<input name="lr" value="1e-4"></label><label>Validation split<input type="number" name="val_split" value="0.2" min="0.05" max="0.5" step="0.05"></label></div>
+                    <label class="check"><input type="checkbox" name="balanced_sampling" value="true" checked>Балансировать сухие и echo-ситуации 50/50 в train</label>
+                    <button class="button primary" type="submit">Поставить обучение в очередь</button>
+                </form></div></div>
+            </div>
+            <div class="section-title"><div><h2>Распределение датасетов</h2><p>Сухие, слабые, осадочные и конвективные ситуации</p></div></div>
+            <div class="grid cols-3" id="datasetStats"></div>
+        </section>
+
+        <section class="pane" id="pane-jobs">
+            <div class="section-title"><div><h2>Очередь заданий</h2><p>Один локальный worker, последовательное выполнение</p></div><button class="button mini" id="refreshJobs">Обновить</button></div>
+            <div class="card"><div class="card-body"><div class="list" id="jobsList"></div></div></div>
+        </section>
+
+        <section class="pane" id="pane-models">
+            <div class="section-title"><div><h2>Реестр моделей</h2><p>Используются только модели, прошедшие quality gate</p></div></div>
+            <div class="grid cols-2" id="modelsGrid"></div>
+        </section>
+    </main>
 </div>
 
-<!-- Sidebar -->
-<div class="sidebar">
-    <div class="d-flex align-items-center mb-5">
-        <i class="fa-solid fa-cloud-bolt fa-2x text-primary me-2"></i>
-        <h4 class="mb-0 fw-bold">MRL Forecast <span class="badge bg-primary fs-6">Pro</span></h4>
-    </div>
-    
-    <nav class="nav flex-column">
-        <a class="nav-link active" href="#" data-pane="inference">
-            <i class="fa-solid fa-chart-line"></i> Прогноз (Dashboard)
-        </a>
-        <a class="nav-link" href="#" data-pane="data-mgmt">
-            <i class="fa-solid fa-download"></i> Менеджер данных
-        </a>
-        <a class="nav-link" href="#" data-pane="datasets">
-            <i class="fa-solid fa-layer-group"></i> Подготовка датасетов
-        </a>
-        <a class="nav-link" href="#" data-pane="models">
-            <i class="fa-solid fa-brain"></i> Лаборатория моделей
-        </a>
-    </nav>
-    
-    <div class="mt-auto pt-5">
-        <div class="card bg-dark border-0">
-            <div class="card-body p-3">
-                <h6 class="small fw-bold text-white mb-1">Активная модель:</h6>
-                <p id="activeModelName" class="small text-white-50 mb-0 text-truncate" title="Стандартная (Built-in)">Стандартная (Built-in)</p>
-            </div>
-        </div>
-    </div>
-</div>
+<nav class="mobile-nav" id="mobileNav">
+    <button class="active" data-pane="overview"><span>⌂</span>Обзор</button><button data-pane="forecast"><span>◉</span>Прогноз</button><button data-pane="data"><span>▦</span>Архив</button><button data-pane="training"><span>△</span>Обучение</button><button data-pane="jobs"><span>◷</span>Задания</button><button data-pane="models"><span>◇</span>Модели</button><button data-pane="sources"><span>⌁</span>Источники</button>
+</nav>
 
-<!-- Toast Container -->
-<div class="toast-container position-fixed bottom-0 end-0 p-3">
-    <div id="liveToast" class="toast align-items-center border-0" role="alert" aria-live="assertive" aria-atomic="true">
-        <div class="d-flex">
-            <div class="toast-body">
-                <i id="toastIcon" class="fa-solid me-2"></i>
-                <span id="toastMessage"></span>
-            </div>
-            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
-        </div>
-    </div>
-</div>
+<dialog id="logDialog"><div class="dialog-head"><h3 id="logTitle">Журнал</h3><button class="icon-button" onclick="logDialog.close()">×</button></div><pre id="logContent"></pre></dialog>
+<div class="toast" id="toast"></div>
 
-<!-- Main Content -->
-<div class="main-container">
-    
-    <!-- SECTION: INFERENCE -->
-    <div id="pane-inference" class="section-pane active">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2 class="fw-bold">Оперативный прогноз</h2>
-            <div class="d-flex gap-2">
-                <div class="dropdown">
-                    <button class="btn btn-white shadow-sm dropdown-toggle" type="button" data-bs-toggle="dropdown">
-                        <i class="fa-solid fa-robot me-2 text-primary"></i> Выбрать модель
-                    </button>
-                    <ul class="dropdown-menu shadow border-0" id="modelSelectionList"></ul>
-                </div>
-                <button id="exportNetCDFBtn" class="btn btn-outline-primary shadow-sm d-none" onclick="exportToNetCDF()">
-                    <i class="fa-solid fa-file-export me-1"></i> Экспорт .nc
-                </button>
-            </div>
-        </div>
-        
-        <div class="row mb-4">
-            <div class="col-lg-3">
-                <div class="card h-100">
-                    <div class="card-header">Настройки источника</div>
-                    <div class="card-body">
-                        <form id="nowcastForm">
-                            <div class="mb-3">
-                                <label class="form-label small fw-bold">Тип данных</label>
-                                <select class="form-select form-select-sm" name="source_type" id="srcType">
-                                    <option value="ftp">NOAA FTP (Live)</option>
-                                    <option value="aws">AWS S3 (High Res)</option>
-                                    <option value="demo">DEMO (синтетические данные)</option>
-                                    <option value="upload">Загрузка файла</option>
-                                </select>
-                            </div>
-                            <div id="ftpControls">
-                                <div class="mb-3">
-                                    <label class="form-label small fw-bold">Станция</label>
-                                    <select class="form-select form-select-sm" id="ftpStationSelect" name="ftp_station">
-                                        <option>Загрузка...</option>
-                                    </select>
-                                </div>
-                                <div class="mb-3">
-                                    <label class="form-label small fw-bold">Время</label>
-                                    <select class="form-select form-select-sm" id="ftpTimeSelect" name="ftp_time">
-                                        <option>Выберите станцию</option>
-                                    </select>
-                                </div>
-                                <div class="mb-3">
-                                    <label class="form-label small fw-bold">Дата для предпросмотра</label>
-                                    <input type="date" class="form-control form-control-sm" id="previewDate" value="">
-                                </div>
-                                <div class="mb-3">
-                                    <button type="button" class="btn btn-outline-info btn-sm w-100" onclick="showDataPreview()">
-                                        <i class="fa-solid fa-magnifying-glass-chart me-1"></i> Предпросмотр данных
-                                    </button>
-                                </div>
-                            </div>
-                            <div id="uploadControls" style="display:none">
-                                <div class="mb-3">
-                                    <label class="form-label small fw-bold">Файл (.npy/.npz)</label>
-                                    <input type="file" name="file" class="form-control form-control-sm">
-                                </div>
-                            </div>
-                            <button type="submit" class="btn btn-primary w-100 mt-2">Запустить ИИ</button>
-                        </form>
-                    </div>
-                </div>
-            </div>
-            <div class="col-lg-9">
-                <div id="resultsContainer">
-                    <div class="card shadow-sm">
-                        <div class="card-header bg-white d-flex justify-content-between align-items-center">
-                            <h5 class="mb-0 fw-bold"><i class="fa-solid fa-satellite-dish text-primary me-2"></i>Радарный плеер</h5>
-                            <span id="playerTimeLabel" class="badge bg-primary fs-6">Ожидание данных</span>
-                        </div>
-                        <div class="card-body text-center p-0 position-relative" style="background: #e2e8f0; min-height: 500px;">
-                            <img id="radarPlayerImg" src="" style="width: 100%; height: auto; display: none;">
-                            <div id="playerPlaceholder" class="py-5 my-5 text-muted">
-                                <i class="fa-solid fa-map-location-dot fa-4x mb-3 opacity-50"></i>
-                                <p>Запустите прогноз для отображения карты</p>
-                            </div>
-                        </div>
-                        <div class="card-footer bg-white">
-                            <div class="d-flex align-items-center">
-                                <button id="btnPlayPause" class="btn btn-primary me-3" disabled>
-                                    <i class="fa-solid fa-play"></i>
-                                </button>
-                                <input type="range" class="form-range w-100" id="timeSlider" min="0" max="0" value="0" disabled>
-                            </div>
-                            <div class="d-flex justify-content-between mt-2 px-1">
-                                <small class="text-muted fw-bold">История (-30 мин)</small>
-                                <small class="text-primary fw-bold">Прогноз (+40 мин)</small>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- SECTION: DATA MANAGEMENT -->
-    <div id="pane-data-mgmt" class="section-pane">
-        <h2 class="fw-bold mb-4">Менеджер сырых данных</h2>
-        <div class="row">
-            <div class="col-lg-4">
-                <div class="card mb-4">
-                    <div class="card-header">Скачать новые данные (AWS)</div>
-                    <div class="card-body">
-                        <form id="downloadForm">
-                            <div class="mb-3">
-                                <label class="form-label small">ID станции</label>
-                                <select class="form-select" name="station" id="dlStationSelect">
-                                    <option>Загрузка...</option>
-                                </select>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label small">Дата</label>
-                                <input type="date" class="form-control" name="date" id="dlDate">
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label small">Количество сканов</label>
-                                <input type="number" class="form-control" name="count" value="100">
-                            </div>
-                            <button type="submit" class="btn btn-primary w-100">Начать скачивание</button>
-                        </form>
-                    </div>
-                </div>
-                <div id="dlTaskStatus" class="card d-none">
-                    <div class="card-header d-flex justify-content-between">
-                        Лог загрузки <span class="badge bg-primary" id="dlStatusBadge">RUNNING</span>
-                    </div>
-                    <div class="card-body p-0">
-                        <div id="dlLogs" class="log-container" style="height: 200px;"></div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-lg-8">
-                <div class="card">
-                    <div class="card-header">Архив загрузок (data/raw/archive)</div>
-                    <div class="card-body p-0">
-                        <table class="table table-hover mb-0">
-                            <thead class="table-light">
-                                <tr>
-                                    <th>Станция</th>
-                                    <th>Дата</th>
-                                    <th>Файлов</th>
-                                    <th>Статус</th>
-                                    <th>Действие</th>
-                                </tr>
-                            </thead>
-                            <tbody id="rawInventoryTable"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- SECTION: DATASETS -->
-    <div id="pane-datasets" class="section-pane">
-        <h2 class="fw-bold mb-4">Подготовка датасетов</h2>
-        <div class="row">
-            <div class="col-lg-8">
-                <div class="card mb-4">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <span>Готовые датасеты (Numpy sequences)</span>
-                        <button class="btn btn-sm btn-success" onclick="goToTrainWithSelected()">
-                            <i class="fa-solid fa-brain me-1"></i> Обучить на выбранных
-                        </button>
-                    </div>
-                    <div class="card-body p-0">
-                        <table class="table table-hover mb-0">
-                            <thead class="table-light">
-                                <tr>
-                                    <th width="40"><input type="checkbox" id="selectAllDatasets"></th>
-                                    <th>ID</th>
-                                    <th>Станция</th>
-                                    <th>Сэмплов</th>
-                                    <th>Seq Len</th>
-                                </tr>
-                            </thead>
-                            <tbody id="datasetsInventoryTable"></tbody>
-                        </table>
-                    </div>
-                </div>
-                <div id="prepTaskStatus" class="card d-none">
-                    <div class="card-header">Процесс подготовки</div>
-                    <div class="card-body p-0">
-                        <div id="prepLogs" class="log-container"></div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-lg-4">
-                <div class="alert alert-info border-0">
-                    <i class="fa-solid fa-lightbulb me-2"></i> 
-                    Выберите один или несколько датасетов и нажмите <b>«Обучить на выбранных»</b> для создания композитной модели.
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- SECTION: MODELS -->
-    <div id="pane-models" class="section-pane">
-        <h2 class="fw-bold mb-4">Лаборатория моделей</h2>
-        <div class="row">
-            <div class="col-lg-4">
-                <div class="card mb-4">
-                    <div class="card-header">Настройка обучения</div>
-                    <div class="card-body">
-                        <form id="trainForm">
-                            <div class="mb-3">
-                                <label class="form-label small fw-bold">Выбранные датасеты</label>
-                                <div id="selectedDatasetsList" class="small text-muted mb-2">Ничего не выбрано</div>
-                                <div id="datasetCheckboxes" class="d-none"></div>
-                            </div>
-                            <div class="row g-2 mb-3">
-                                <div class="col-6">
-                                    <label class="form-label small fw-bold">Эпохи</label>
-                                    <input type="number" class="form-control form-control-sm" name="epochs" value="10">
-                                </div>
-                                <div class="col-6">
-                                    <label class="form-label small fw-bold">Батч</label>
-                                    <input type="number" class="form-control form-control-sm" name="batch_size" value="4">
-                                </div>
-                            </div>
-                            <div class="row g-2 mb-3">
-                                <div class="col-6">
-                                    <label class="form-label small fw-bold">Val Split</label>
-                                    <input type="number" class="form-control form-control-sm" name="val_split" value="0.2" step="0.1">
-                                </div>
-                                <div class="col-6">
-                                    <label class="form-label small fw-bold">Lead Time</label>
-                                    <select class="form-select form-select-sm" name="lead_time">
-                                        <option value="4">1 час (4 шага)</option>
-                                        <option value="8">2 часа (8 шагов)</option>
-                                        <option value="12">3 часа (12 шагов)</option>
-                                    </select>
-                                </div>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label small fw-bold">Learning Rate</label>
-                                <input type="text" class="form-control form-control-sm" name="lr" value="1e-4">
-                            </div>
-                            <button type="submit" class="btn btn-success w-100">Запустить обучение</button>
-                        </form>
-                    </div>
-                </div>
-                <div id="trainTaskStatus" class="card d-none">
-                    <div class="card-header">Лог обучения</div>
-                    <div class="card-body p-0">
-                        <div id="trainLogs" class="log-container"></div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-lg-8">
-                <div class="card">
-                    <div class="card-header">Реестр обученных моделей</div>
-                    <div class="card-body p-0">
-                        <table class="table table-hover mb-0">
-                            <thead class="table-light">
-                                <tr>
-                                    <th>ID Модели</th>
-                                    <th>Данные</th>
-                                    <th>Loss</th>
-                                    <th>Создана</th>
-                                    <th></th>
-                                </tr>
-                            </thead>
-                            <tbody id="modelsInventoryTable"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-</div>
-
-<!-- Modal for dataset preparation -->
-<div class="modal fade" id="prepModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Подготовка датасета</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <form id="prepForm">
-                    <input type="hidden" name="archive_dir" id="prepArchiveDir">
-                    <div class="mb-3">
-                        <label class="form-label">Длина последовательности (seq_len)</label>
-                        <input type="number" class="form-control" name="seq_len" value="8">
-                        <div class="form-text">4 кадра истории + 4 кадра будущего (для 10-мин интервала)</div>
-                    </div>
-                    <button type="submit" class="btn btn-primary">Запустить процесс</button>
-                </form>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Modal for model details -->
-<div class="modal fade" id="modelDetailsModal" tabindex="-1">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content border-0 shadow-lg">
-            <div class="modal-header bg-dark text-white">
-                <h5 class="modal-title" id="mdlTitle">Детали модели</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body bg-light">
-                <div class="row">
-                    <div class="col-md-6">
-                        <div class="card h-100">
-                            <div class="card-header small">Кривая обучения</div>
-                            <div class="card-body p-1">
-                                <img id="mdlPlot" class="img-fluid rounded" src="">
-                                <div id="noPlotMsg" class="text-center py-5 text-muted d-none">График недоступен</div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="card h-100">
-                            <div class="card-header small">Метаданные (Provenance)</div>
-                            <div class="card-body">
-                                <div id="mdlMeta" class="small"></div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Modal for data preview -->
-<div class="modal fade" id="previewModal" tabindex="-1">
-    <div class="modal-dialog modal-lg animate-fade-in">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title"><i class="fa-solid fa-calendar-check me-2 text-primary"></i>Наличие данных в архиве</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <h6 id="previewInfo">Загрузка данных...</h6>
-                    <span id="previewTotal" class="badge bg-primary"></span>
-                </div>
-                <div class="small text-muted mb-2">Суточный график (24 часа):</div>
-                <div class="preview-bar" id="previewBar"></div>
-                <div class="d-flex justify-content-between text-muted small mt-1">
-                    <span>00:00</span>
-                    <span>12:00</span>
-                    <span>23:59</span>
-                </div>
-                <div class="mt-4">
-                    <div class="d-flex gap-3 small">
-                        <div><span class="status-dot bg-success"></span> Данные есть</div>
-                        <div><span class="status-dot bg-danger"></span> Пробелы</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    // === GLOBAL STATE ===
-    const loading = document.getElementById('loadingOverlay');
-    const toastEl = document.getElementById('liveToast');
-    const toast = new bootstrap.Toast(toastEl);
-    let playerFrames = [];
+const state = {sources: [], raw: [], datasets: [], models: [], jobs: [], frames: [], labels: [], frame: 0, timer: null};
+const panes = {
+    overview: ['Обзор', 'Состояние системы и последние операции'], forecast: ['Прогноз', 'Наблюдения и экспериментальный nowcast'],
+    sources: ['Источники', 'Количественные, discovery и визуальные контуры'], data: ['Архив', 'Загрузка и canonical-предобработка'],
+    training: ['Обучение', 'Выборка, балансировка и параметры'], jobs: ['Задания', 'Очередь и журналы локального worker'], models: ['Модели', 'Реестр, метрики и выбор рабочей модели']
+};
 
-    function showToast(message, type = 'success') {
-        const toastMessage = document.getElementById('toastMessage');
-        const toastIcon = document.getElementById('toastIcon');
-        toastMessage.textContent = message;
-        
-        toastEl.className = 'toast align-items-center border-0 text-white';
-        toastIcon.className = 'fa-solid me-2';
-        
-        if (type === 'success') {
-            toastEl.classList.add('bg-success');
-            toastIcon.classList.add('fa-circle-check');
-        } else if (type === 'error' || type === 'danger') {
-            toastEl.classList.add('bg-danger');
-            toastIcon.classList.add('fa-circle-exclamation');
-        } else {
-            toastEl.classList.add('bg-info');
-            toastIcon.classList.add('fa-circle-info');
-        }
-        toast.show();
-    }
-    let playerLabels = [];
-    let currentFrame = 0;
-    let playInterval = null;
+async function api(url, options = {}) {
+    const response = await fetch(url, options);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.error || data.success === false) throw new Error(data.error || data.message || `HTTP ${response.status}`);
+    return data;
+}
+function escapeHtml(value) { return String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
+function toast(message, error = false) { const el = document.getElementById('toast'); el.textContent = message; el.className = `toast show${error ? ' error' : ''}`; clearTimeout(el._timer); el._timer = setTimeout(() => el.className = 'toast', 3200); }
+function statusBadge(status) { const cls = status === 'completed' || status === 'published' ? 'good' : status === 'failed' || status === 'interrupted' ? 'bad' : status === 'running' || status === 'queued' || status === 'cancelling' ? 'info' : 'warn'; return `<span class="badge ${cls}">${escapeHtml(status || 'unknown')}</span>`; }
+function fmtDate(value) { return value ? new Date(value).toLocaleString('ru-RU', {dateStyle:'short', timeStyle:'short'}) : '—'; }
+function empty(text) { return `<div class="empty">${escapeHtml(text)}</div>`; }
 
-    // === NAVIGATION ===
-    document.querySelectorAll('.nav-link').forEach(link => {
-        link.addEventListener('click', (e) => {
-            e.preventDefault();
-            const paneId = link.getAttribute('data-pane');
-            
-            document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
-            link.classList.add('active');
-            
-            document.querySelectorAll('.section-pane').forEach(p => p.classList.remove('active'));
-            document.getElementById('pane-' + paneId).classList.add('active');
-            
-            refreshInventory();
-        });
-    });
+function showPane(name) {
+    document.querySelectorAll('.pane').forEach(el => el.classList.toggle('active', el.id === `pane-${name}`));
+    document.querySelectorAll('[data-pane]').forEach(el => el.classList.toggle('active', el.dataset.pane === name));
+    document.getElementById('pageTitle').textContent = panes[name][0]; document.getElementById('pageSubtitle').textContent = panes[name][1];
+    window.scrollTo({top: 0, behavior: 'smooth'});
+}
+document.querySelectorAll('[data-pane]').forEach(el => el.addEventListener('click', () => showPane(el.dataset.pane)));
+document.querySelectorAll('[data-go]').forEach(el => el.addEventListener('click', () => showPane(el.dataset.go)));
 
-    // === API CALLS ===
+document.getElementById('themeBtn').onclick = () => { const dark = document.documentElement.dataset.theme === 'dark'; document.documentElement.dataset.theme = dark ? '' : 'dark'; localStorage.setItem('theme', dark ? 'light' : 'dark'); };
+if (localStorage.getItem('theme') === 'dark' || (!localStorage.getItem('theme') && matchMedia('(prefers-color-scheme: dark)').matches)) document.documentElement.dataset.theme = 'dark';
 
-    async function loadStations() {
-        const stationSelects = ['ftpStationSelect', 'dlStationSelect'];
-        stationSelects.forEach(id => {
-            const el = document.getElementById(id);
-            if (el) {
-                el.classList.add('select-loading');
-                el.disabled = true;
-            }
-        });
+function renderSources() {
+    const html = state.sources.map(source => `<div class="card source-card"><div class="card-body"><div class="symbol">${source.training_allowed ? '◉' : source.visualization_allowed ? '◌' : '⌕'}</div><h3>${escapeHtml(source.source_id)}</h3><p>${escapeHtml(source.notes || source.native_format)}</p><div class="source-flags"><span class="badge ${source.training_allowed ? 'good' : 'warn'}">${source.training_allowed ? 'обучение' : 'не для train'}</span><span class="badge">${escapeHtml(source.native_format)}</span></div></div></div>`).join('');
+    document.getElementById('sourcesGrid').innerHTML = html || empty('Источники не зарегистрированы');
+    document.getElementById('overviewSources').innerHTML = html ? state.sources.slice(0, 3).map(source => `<div class="card"><div class="card-body"><strong>${escapeHtml(source.source_id)}</strong><p style="color:var(--muted);font-size:13px">${escapeHtml(source.native_format)}</p>${source.training_allowed ? '<span class="badge good">quantitative</span>' : '<span class="badge warn">restricted</span>'}</div></div>`).join('') : empty('Нет данных');
+}
+function renderRaw() {
+    const select = document.getElementById('prepareArchive'); select.innerHTML = '<option value="">Выберите архив</option>' + state.raw.filter(x => x.status === 'completed').map(x => `<option value="${escapeHtml(x.path)}">${escapeHtml(x.folder_name)} · ${escapeHtml(x.station || '')}</option>`).join('');
+    document.getElementById('rawList').innerHTML = state.raw.length ? state.raw.map(item => `<div class="list-item"><div class="meta"><strong>${escapeHtml(item.folder_name)}</strong><small>${escapeHtml(item.station || '—')} · ${escapeHtml(item.date || '')} · ${item.downloaded_count || 0} файлов</small></div><div class="row-actions">${statusBadge(item.status)}<button class="button mini" onclick="chooseArchive('${escapeHtml(item.path)}')">Подготовить</button></div></div>`).join('') : empty('Архив пока пуст');
+}
+function chooseArchive(path) { document.getElementById('prepareArchive').value = path; showPane('data'); document.getElementById('prepareArchive').focus(); }
+function classSummary(counts = {}) { return Object.entries(counts).filter(([,v]) => v).map(([k,v]) => `${k}: ${v}`).join(' · ') || 'классы ещё не рассчитаны'; }
+function renderDatasets() {
+    document.getElementById('datasetPicker').innerHTML = state.datasets.length ? state.datasets.filter(x => x.status === 'completed').map(item => `<label class="dataset-option"><input type="checkbox" class="dataset-check" value="${escapeHtml(item.path)}"><span><strong>${escapeHtml(item.folder_name)}</strong><small style="display:block;color:var(--muted)">${item.sample_count || 0} sequences · ${escapeHtml(item.pipeline?.pipeline_version || '')}<br>${escapeHtml(classSummary(item.class_counts))}</small></span></label>`).join('') : empty('Сначала подготовьте датасет');
+    document.getElementById('datasetStats').innerHTML = state.datasets.length ? state.datasets.map(item => `<div class="card"><div class="card-body"><strong>${escapeHtml(item.folder_name)}</strong><p style="color:var(--muted);font-size:13px">${escapeHtml(classSummary(item.class_counts))}</p><span class="badge info">${item.sample_count || 0} samples</span></div></div>`).join('') : empty('Нет статистики');
+}
+function renderModels() {
+    document.getElementById('metricModels').textContent = state.models.length;
+    document.getElementById('modelsGrid').innerHTML = state.models.length ? state.models.map(item => `<div class="card"><div class="card-head"><h3>${escapeHtml(item.folder_name)}</h3>${statusBadge(item.status)}</div><div class="card-body"><div class="source-flags"><span class="badge">${escapeHtml(item.model_architecture || 'unknown')}</span><span class="badge info">${escapeHtml(item.pipeline_version || '')}</span><span class="badge">${item.horizon_minutes || '—'} мин</span></div><p style="color:var(--muted);font-size:13px">Loss: ${item.metrics?.best_val_loss != null ? Number(item.metrics.best_val_loss).toFixed(6) : '—'} · ${escapeHtml(item.sampling || 'natural')}</p><div class="row-actions"><button class="button mini" onclick="showModel('${escapeHtml(item.folder_name)}')">Метаданные</button><button class="button mini primary" ${item.usable ? '' : 'disabled'} onclick="loadModel('${escapeHtml(item.path)}','${escapeHtml(item.folder_name)}')">Использовать</button></div></div></div>`).join('') : empty('Реестр моделей пуст');
+}
+function jobHtml(job) { const cancellable = ['queued','running','cancelling'].includes(job.status); return `<div class="list-item job-line status-${escapeHtml(job.status)}"><div><span class="progress-dot"></span> <strong>${escapeHtml(job.kind)}</strong></div><div class="meta"><small>${fmtDate(job.created_at)}${job.error ? ' · ' + escapeHtml(job.error) : ''}</small></div><div class="row-actions">${statusBadge(job.status)}<button class="button mini" onclick="openLog('${job.id}')">Журнал</button>${cancellable ? `<button class="button mini danger" onclick="cancelJob('${job.id}')">Отмена</button>` : ''}</div></div>`; }
+function renderJobs() { document.getElementById('jobsList').innerHTML = state.jobs.length ? state.jobs.map(jobHtml).join('') : empty('Заданий пока нет'); document.getElementById('recentJobs').innerHTML = state.jobs.length ? state.jobs.slice(0, 5).map(jobHtml).join('') : empty('Заданий пока нет'); }
+function renderMetrics() { document.getElementById('metricRaw').textContent = state.raw.length; document.getElementById('metricDatasets').textContent = state.datasets.length; }
 
-        try {
-            const res = await fetch('/api/ftp/stations');
-            if (!res.ok) throw new Error('Ошибка загрузки станций');
-            const stations = await res.json();
-            
-            stationSelects.forEach(id => {
-                const el = document.getElementById(id);
-                if (el) {
-                    el.innerHTML = stations.map(s => `<option value="${s.code}">${s.code.toUpperCase()} - ${s.name}</option>`).join('');
-                    el.classList.remove('select-loading');
-                    el.disabled = false;
-                    if (id === 'ftpStationSelect') el.value = 'kokx';
-                }
-            });
-            
-            if (stations.length > 0) loadTimes('kokx');
-        } catch (e) {
-            console.error(e);
-            stationSelects.forEach(id => {
-                const el = document.getElementById(id);
-                if (el) {
-                    el.innerHTML = '<option value="">Ошибка загрузки</option>';
-                    el.classList.remove('select-loading');
-                }
-            });
-        }
-    }
+async function refreshAll(silent = false) {
+    try {
+        const [sources, raw, datasets, models, jobs] = await Promise.all([api('/api/sources'), api('/api/inventory/raw'), api('/api/inventory/datasets'), api('/api/inventory/models'), api('/api/jobs')]);
+        Object.assign(state, {sources, raw, datasets, models, jobs}); renderSources(); renderRaw(); renderDatasets(); renderModels(); renderJobs(); renderMetrics();
+        if (!silent) toast('Данные обновлены');
+    } catch (error) { toast(error.message, true); }
+}
+document.getElementById('refreshBtn').onclick = () => refreshAll(); document.getElementById('refreshJobs').onclick = () => refreshAll(true);
 
-    async function loadTimes(station) {
-        const el = document.getElementById('ftpTimeSelect');
-        if (!el) return;
-        
-        el.classList.add('select-loading');
-        el.disabled = true;
-        el.innerHTML = '<option>Загрузка...</option>';
+async function submitJob(form, url) { const data = await api(url, {method:'POST', body:new FormData(form)}); toast(`Задание ${data.task_id.slice(0,8)} поставлено в очередь`); form.reset(); await refreshAll(true); showPane('jobs'); }
+document.getElementById('downloadForm').onsubmit = async e => { e.preventDefault(); try { await submitJob(e.target, '/api/task/download'); } catch (err) { toast(err.message, true); } };
+document.getElementById('prepareForm').onsubmit = async e => { e.preventDefault(); try { await submitJob(e.target, '/api/task/prepare'); } catch (err) { toast(err.message, true); } };
+document.getElementById('trainForm').onsubmit = async e => { e.preventDefault(); try { const form = new FormData(e.target); document.querySelectorAll('.dataset-check:checked').forEach(el => form.append('dataset_dirs[]', el.value)); if (!form.getAll('dataset_dirs[]').length) throw new Error('Выберите хотя бы один датасет'); const data = await api('/api/task/train', {method:'POST', body:form}); toast(`Обучение ${data.task_id.slice(0,8)} поставлено в очередь`); await refreshAll(true); showPane('jobs'); } catch (err) { toast(err.message, true); } };
 
-        try {
-            const res = await fetch(`/api/ftp/times?station=${station}`);
-            if (!res.ok) throw new Error('Ошибка загрузки времени');
-            const times = await res.json();
-            
-            el.innerHTML = '<option value="latest">Latest Scan</option>' + 
-                           times.map(t => `<option value="${t.id}">${t.label}</option>`).join('');
-        } catch (e) {
-            el.innerHTML = '<option value="latest">Latest Scan (Error loading list)</option>';
-        } finally {
-            el.classList.remove('select-loading');
-            el.disabled = false;
-        }
-    }
+async function openLog(id) { try { const data = await api(`/api/task/logs/${id}`); document.getElementById('logTitle').textContent = `${data.kind} · ${data.status}`; document.getElementById('logContent').textContent = data.logs || 'Журнал пока пуст'; logDialog.showModal(); } catch (err) { toast(err.message, true); } }
+async function cancelJob(id) { try { await api(`/api/jobs/${id}/cancel`, {method:'POST'}); toast('Запрошена отмена'); refreshAll(true); } catch (err) { toast(err.message, true); } }
+async function loadModel(path, name) { try { const body = new FormData(); body.append('model_path', path); await api('/api/model/load', {method:'POST', body}); document.getElementById('activeModel').textContent = name; toast('Модель загружена'); } catch (err) { toast(err.message, true); } }
+async function showModel(id) { try { const data = await api(`/api/model/details/${id}`); document.getElementById('logTitle').textContent = `Модель ${id}`; document.getElementById('logContent').textContent = JSON.stringify(data.metadata, null, 2); logDialog.showModal(); } catch (err) { toast(err.message, true); } }
 
-    async function refreshInventory() {
-        try {
-            // Raw data
-            const rawRes = await fetch('/api/inventory/raw');
-            const rawItems = await rawRes.json();
-            const rawTable = document.getElementById('rawInventoryTable');
-            
-            if (rawTable) {
-                if (rawItems.length === 0) {
-                    rawTable.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-muted">Архив пуст</td></tr>';
-                } else {
-                    rawTable.innerHTML = rawItems.map(item => `
-                        <tr>
-                            <td><span class="badge bg-light text-dark border">${item.station.toUpperCase()}</span></td>
-                            <td><i class="fa-regular fa-calendar me-1"></i> ${item.date}</td>
-                            <td><span class="badge bg-info-subtle text-info border-info-subtle px-2">${item.downloaded_count || 0} файлов</span></td>
-                            <td><span class="status-dot bg-${item.status}"></span> <small class="text-uppercase fw-bold text-muted">${item.status}</small></td>
-                            <td class="text-end">
-                                <button class="btn btn-sm btn-primary py-1 px-3" onclick="openPrepModal('${item.path.replace(/\\/g, '/')}')">
-                                    <i class="fa-solid fa-play small me-1"></i> Подготовить
-                                </button>
-                            </td>
-                        </tr>
-                    `).join('');
-                }
-            }
+const sourceSelect = document.getElementById('forecastSource');
+function syncSourceFields() { const value = sourceSelect.value; document.getElementById('localField').hidden = value !== 'local'; document.getElementById('uploadField').hidden = value !== 'upload'; document.getElementById('stationField').hidden = !['aws','ftp'].includes(value); }
+sourceSelect.onchange = syncSourceFields; syncSourceFields();
 
-            // Datasets
-            const dsRes = await fetch('/api/inventory/datasets');
-            const dsItems = await dsRes.json();
-            const dsTable = document.getElementById('datasetsInventoryTable');
-            
-            if (dsTable) {
-                if (dsItems.length === 0) {
-                    dsTable.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-muted">Нет готовых датасетов</td></tr>';
-                } else {
-                    dsTable.innerHTML = dsItems.map(item => `
-                        <tr>
-                            <td><input type="checkbox" class="ds-check" value="${item.path}" data-name="${item.folder_name}"></td>
-                            <td><code class="small text-primary">${item.folder_name}</code></td>
-                            <td><span class="badge bg-light text-dark border">${item.station.toUpperCase()}</span></td>
-                            <td><span class="badge bg-success-subtle text-success px-2 border-success-subtle">${item.sample_count} сэмплов</span></td>
-                            <td><small class="fw-bold">${item.sequence_length} кадров</small></td>
-                        </tr>
-                    `).join('');
-                }
-            }
-            
-            // Models
-            const modelRes = await fetch('/api/inventory/models');
-            const modelItems = await modelRes.json();
-            const modelTable = document.getElementById('modelsInventoryTable');
-            const modelSelect = document.getElementById('modelSelectionList');
-            
-            if (modelTable) {
-                if (modelItems.length === 0) {
-                    modelTable.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-muted">Реестр пуст</td></tr>';
-                } else {
-                    modelTable.innerHTML = modelItems.map(item => `
-                        <tr>
-                            <td class="small"><b>${item.folder_name}</b></td>
-                            <td><span class="badge bg-light text-muted border">${item.station ? item.station.toUpperCase() : '---'}</span></td>
-                            <td><code class="text-danger fw-bold">${item.metrics ? item.metrics.best_val_loss.toFixed(5) : '---'}</code></td>
-                            <td><small class="text-muted">${new Date(item.timestamp_created || item.timestamp_updated).toLocaleDateString()}</small></td>
-                            <td class="text-end">
-                                <button class="btn btn-sm btn-outline-secondary me-1" onclick="showModelDetails('${item.folder_name}')">
-                                    <i class="fa-solid fa-circle-info"></i>
-                                </button>
-                                <button class="btn btn-sm btn-primary" ${item.usable ? '' : 'disabled title="Модель не прошла quality gate"'} onclick="loadModel('${item.path.replace(/\\/g, '/')}')">Использовать</button>
-                            </td>
-                        </tr>
-                    `).join('');
-                }
-            }
+function setFrame(index) { if (!state.frames.length) return; state.frame = Math.max(0, Math.min(index, state.frames.length - 1)); viewerImage.src = state.frames[state.frame]; viewerImage.style.display = 'block'; viewerPlaceholder.style.display = 'none'; frameSlider.value = state.frame; frameLabel.textContent = state.labels[state.frame]; }
+function stopPlayer() { clearInterval(state.timer); state.timer = null; playBtn.textContent = '▶'; }
+playBtn.onclick = () => { if (state.timer) return stopPlayer(); playBtn.textContent = '❚❚'; state.timer = setInterval(() => setFrame((state.frame + 1) % state.frames.length), 850); };
+frameSlider.oninput = e => { stopPlayer(); setFrame(Number(e.target.value)); };
+exportBtn.onclick = () => location.href = '/api/export/netcdf';
 
-            if (modelSelect) {
-                if (modelItems.length === 0) {
-                    modelSelect.innerHTML = '<li><a class="dropdown-item disabled" href="#">Нет доступных моделей</a></li>';
-                } else {
-                    const usableModels = modelItems.filter(item => item.usable);
-                    modelSelect.innerHTML = usableModels.length === 0
-                        ? '<li><a class="dropdown-item disabled" href="#">Нет моделей, прошедших quality gate</a></li>'
-                        : usableModels.map(item => `
-                        <li><a class="dropdown-item d-flex justify-content-between align-items-center" href="#" onclick="loadModel('${item.path.replace(/\\/g, '/')}')">
-                            <span>${item.folder_name}</span>
-                            <span class="badge bg-light text-muted border ms-2">${item.station || ''}</span>
-                        </a></li>
-                    `).join('');
-                }
-            }
-        } catch (e) {
-            console.error("Inventory error:", e);
-        }
-    }
+document.getElementById('forecastForm').onsubmit = async e => { e.preventDefault(); stopPlayer(); try { const data = await api('/api/predict', {method:'POST', body:new FormData(e.target)}); state.frames = [...data.history, ...data.forecast].map(item => `data:image/png;base64,${item.data}`); state.labels = [...data.history, ...data.forecast].map(item => item.label); frameSlider.max = state.frames.length - 1; frameSlider.disabled = false; playBtn.disabled = false; exportBtn.disabled = false; setFrame(data.history.length - 1); diagnostics.innerHTML = `<span class="badge info">${escapeHtml(data.pipeline_version)}</span><span class="badge">${data.grid?.width || '—'}×${data.grid?.height || '—'}</span><span class="badge">max ${Number(data.diagnostics.max_dbz).toFixed(1)} dBZ</span><span class="badge warn">экспериментальный продукт</span>`; } catch (err) { toast(err.message, true); } };
 
-    // === UI ACTIONS ===
+async function loadStations() { try { const stations = await api('/api/ftp/stations'); const options = stations.map(s => `<option value="${escapeHtml(s.code)}">${escapeHtml(s.code.toUpperCase())} · ${escapeHtml(s.name)}</option>`).join(''); if (options) { forecastStation.innerHTML = options; downloadStation.innerHTML = options.replaceAll('value="', 'value="').replaceAll(/value="([a-z0-9]+)"/g, (_,v) => `value="${v.toUpperCase()}"`); } } catch (_) {} }
 
-    async function showDataPreview() {
-        const station = document.getElementById('ftpStationSelect').value;
-        const dateInput = document.getElementById('previewDate').value;
-        const date = dateInput || new Date().toISOString().split('T')[0];
-
-        const modalEl = document.getElementById('previewModal');
-        const modal = new bootstrap.Modal(modalEl);
-        modal.show();
-
-        const bar = document.getElementById('previewBar');
-        bar.innerHTML = '<div class="w-100 bg-light text-center small text-muted">Загрузка...</div>';
-
-        try {
-            const res = await fetch(`/api/data/preview?station=${station}&date=${date}`);
-            if (!res.ok) throw new Error('Ошибка сервера');
-            const data = await res.json();
-
-            document.getElementById('previewInfo').textContent = `Станция ${data.station} на ${data.date}`;
-            document.getElementById('previewTotal').textContent = `${data.total_scans} сканов`;
-
-            bar.innerHTML = data.hourly_counts.map((count, hour) => `
-                <div class="preview-chunk ${count > 0 ? 'chunk-has-data' : 'chunk-no-data'}" 
-                     title="${hour}:00 - ${count} сканов"></div>
-            `).join('');
-
-        } catch (e) {
-            bar.innerHTML = `<div class="w-100 bg-danger-subtle text-danger text-center small">Ошибка: ${e.message}</div>`;
-        }
-    }
-
-    async function showModelDetails(modelId) {
-        try {
-            const res = await fetch(`/api/model/details/${modelId}`);
-            const data = await res.json();
-            
-            document.getElementById('mdlTitle').textContent = `Модель: ${modelId}`;
-            const plotImg = document.getElementById('mdlPlot');
-            if (data.plot) {
-                plotImg.src = `data:image/png;base64,${data.plot}`;
-                plotImg.classList.remove('d-none');
-                document.getElementById('noPlotMsg').classList.add('d-none');
-            } else {
-                plotImg.classList.add('d-none');
-                document.getElementById('noPlotMsg').classList.remove('d-none');
-            }
-            
-            const meta = data.metadata;
-            const hparams = meta.hyperparameters || {};
-            document.getElementById('mdlMeta').innerHTML = `
-                <p><b>ID:</b> ${meta.model_id || 'N/A'}</p>
-                <p><b>Архитектура:</b> ConvLSTM</p>
-                <p><b>Эпох:</b> ${hparams.epochs || '?'}</p>
-                <p><b>Batch Size:</b> ${hparams.batch_size || '?'}</p>
-                <p><b>Val Split:</b> ${hparams.val_split || '?'}</p>
-                <p><b>Lead Time:</b> ${hparams.target_length || '?'} шагов</p>
-                <hr>
-                <h6>Данные обучения:</h6>
-                <ul class="list-unstyled">
-                    ${(meta.training_data || []).map(d => `<li><i class="fa-solid fa-database me-2 small"></i> ${d.dataset_id} (${d.station})</li>`).join('')}
-                </ul>
-                <hr>
-                <h6>Результаты:</h6>
-                <p class="text-danger fw-bold">Best Val Loss: ${meta.metrics ? meta.metrics.best_val_loss.toFixed(6) : 'N/A'}</p>
-            `;
-            
-            new bootstrap.Modal(document.getElementById('modelDetailsModal')).show();
-        } catch (e) { showToast("Ошибка загрузки деталей: " + e.message, "error"); }
-    }
-
-    async function loadModel(path) {
-        loading.style.display = 'flex';
-        try {
-            const formData = new FormData();
-            formData.append('model_path', path);
-            const res = await fetch('/api/model/load', { method: 'POST', body: formData });
-            const data = await res.json();
-            if (data.success) {
-                const modelName = path.split('/').pop();
-                const el = document.getElementById('activeModelName');
-                el.textContent = modelName;
-                el.title = modelName;
-                showToast(data.message);
-            } else throw new Error(data.error);
-        } catch (e) {
-            showToast("Ошибка: " + e.message, "error");
-        } finally {
-            loading.style.display = 'none';
-        }
-    }
-
-    function goToTrainWithSelected() {
-        const selected = Array.from(document.querySelectorAll('.ds-check:checked'));
-        if (selected.length === 0) {
-            showToast("Выберите хотя бы один датасет", "info");
-            return;
-        }
-        
-        document.getElementById('selectedDatasetsList').innerHTML = selected.map(el => `<div class="badge bg-info me-1">${el.getAttribute('data-name')}</div>`).join('');
-        const container = document.getElementById('datasetCheckboxes');
-        container.innerHTML = selected.map(el => `<input type="checkbox" name="dataset_dirs[]" value="${el.value}" checked>`).join('');
-        
-        document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
-        document.querySelector('[data-pane="models"]').classList.add('active');
-        document.querySelectorAll('.section-pane').forEach(p => p.classList.remove('active'));
-        document.getElementById('pane-models').classList.add('active');
-    }
-
-    // === RADAR PLAYER ===
-
-    function renderResults(data) {
-        playerFrames = [];
-        playerLabels = [];
-        
-        data.history.forEach(item => {
-            playerFrames.push(`data:image/png;base64,${item.data}`);
-            playerLabels.push(item.label);
-        });
-        data.forecast.forEach(item => {
-            playerFrames.push(`data:image/png;base64,${item.data}`);
-            playerLabels.push(item.label);
-        });
-
-        const maxIdx = playerFrames.length - 1;
-        const slider = document.getElementById('timeSlider');
-        const playBtn = document.getElementById('btnPlayPause');
-        
-        document.getElementById('playerPlaceholder').style.display = 'none';
-        document.getElementById('radarPlayerImg').style.display = 'block';
-        
-        slider.disabled = false;
-        slider.max = maxIdx;
-        playBtn.disabled = false;
-        
-        setFrame(data.history.length - 1); 
-        document.getElementById('exportNetCDFBtn').classList.remove('d-none');
-    }
-
-    function setFrame(index) {
-        currentFrame = index;
-        document.getElementById('timeSlider').value = index;
-        document.getElementById('radarPlayerImg').src = playerFrames[index];
-        
-        const labelBadge = document.getElementById('playerTimeLabel');
-        labelBadge.textContent = playerLabels[index];
-        labelBadge.className = playerLabels[index].includes('T+') ? 'badge bg-danger fs-6' : 'badge bg-primary fs-6';
-    }
-
-    function playAnimation() {
-        document.getElementById('btnPlayPause').innerHTML = '<i class="fa-solid fa-pause"></i>';
-        playInterval = setInterval(() => {
-            let nextFrame = currentFrame + 1;
-            if (nextFrame >= playerFrames.length) nextFrame = 0;
-            setFrame(nextFrame);
-        }, 800);
-    }
-
-    function pauseAnimation() {
-        clearInterval(playInterval);
-        playInterval = null;
-        document.getElementById('btnPlayPause').innerHTML = '<i class="fa-solid fa-play"></i>';
-    }
-
-    document.getElementById('timeSlider').addEventListener('input', (e) => {
-        pauseAnimation();
-        setFrame(parseInt(e.target.value));
-    });
-
-    document.getElementById('btnPlayPause').addEventListener('click', () => {
-        if (playInterval) pauseAnimation();
-        else playAnimation();
-    });
-
-    // === BACKGROUND TASKS ===
-
-    function pollTask(taskId, logsId, badgeId, statusContainerId) {
-        const container = document.getElementById(statusContainerId);
-        if (container) container.classList.remove('d-none');
-        
-        const logsEl = document.getElementById(logsId);
-        const badgeEl = document.getElementById(badgeId);
-        
-        const interval = setInterval(async () => {
-            try {
-                const res = await fetch(`/api/task/logs/${taskId}`);
-                const data = await res.json();
-                if (logsEl) {
-                    logsEl.textContent = data.logs;
-                    logsEl.scrollTop = logsEl.scrollHeight;
-                }
-                if (badgeEl) badgeEl.textContent = data.status.toUpperCase();
-                if (data.status !== 'running') {
-                    clearInterval(interval);
-                    refreshInventory();
-                }
-            } catch (e) { clearInterval(interval); }
-        }, 1500);
-    }
-
-    // === FORMS ===
-
-    document.getElementById('nowcastForm').onsubmit = async (e) => {
-        e.preventDefault();
-        loading.style.display = 'flex';
-        try {
-            const res = await fetch('/api/predict', { method: 'POST', body: new FormData(e.target) });
-            const data = await res.json();
-            if (data.error) showToast(data.error, "error");
-            else renderResults(data);
-        } catch (e) { showToast("Ошибка прогноза: " + e.message, "error"); }
-        finally { loading.style.display = 'none'; }
-    };
-
-    document.getElementById('downloadForm').onsubmit = async (e) => {
-        e.preventDefault();
-        const res = await fetch('/api/task/download', { method: 'POST', body: new FormData(e.target) });
-        const data = await res.json();
-        if (data.success) pollTask('download', 'dlLogs', 'dlStatusBadge', 'dlTaskStatus');
-    };
-
-    document.getElementById('prepForm').onsubmit = async (e) => {
-        e.preventDefault();
-        bootstrap.Modal.getInstance(document.getElementById('prepModal')).hide();
-        const res = await fetch('/api/task/prepare', { method: 'POST', body: new FormData(e.target) });
-        const data = await res.json();
-        if (data.success) pollTask('prepare', 'prepLogs', null, 'prepTaskStatus');
-    };
-
-    document.getElementById('trainForm').onsubmit = async (e) => {
-        e.preventDefault();
-        const res = await fetch('/api/task/train', { method: 'POST', body: new FormData(e.target) });
-        const data = await res.json();
-        if (data.success) pollTask('train', 'trainLogs', null, 'trainTaskStatus');
-    };
-
-    document.getElementById('srcType').onchange = (e) => {
-        const val = e.target.value;
-        document.getElementById('ftpControls').style.display = (val === 'ftp' || val === 'aws') ? 'block' : 'none';
-        document.getElementById('uploadControls').style.display = val === 'upload' ? 'block' : 'none';
-        
-        // Hide time select for AWS as it always fetches latest for now
-        document.getElementById('ftpTimeSelect').parentElement.style.display = val === 'aws' ? 'none' : 'block';
-    };
-
-    function openPrepModal(path) {
-        document.getElementById('prepArchiveDir').value = path;
-        new bootstrap.Modal(document.getElementById('prepModal')).show();
-    }
-
-    async function exportToNetCDF() {
-        window.location.href = '/api/export/netcdf';
-    }
-
-    // === INITIALIZATION ===
-    document.getElementById('dlDate').valueAsDate = new Date();
-    document.getElementById('previewDate').valueAsDate = new Date();
-    document.getElementById('ftpStationSelect').onchange = (e) => loadTimes(e.target.value);
-    
-    loadStations();
-    refreshInventory();
+document.getElementById('downloadDate').valueAsDate = new Date();
+refreshAll(true); loadStations();
+setInterval(() => refreshAll(true), 4000);
 </script>
 </body>
 </html>
