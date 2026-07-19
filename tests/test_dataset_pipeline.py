@@ -13,7 +13,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 from config import FORECAST_STEP_MINUTES  # noqa: E402
 from make_dataset import SAMPLE_FORMAT, process_archive_directory, regular_frame_segments  # noqa: E402
 from radar_pipeline import PIPELINE_VERSION, RadarFrame  # noqa: E402
-from train_nowcasting_model import temporal_split_indices  # noqa: E402
+from train_nowcasting_model import grouped_temporal_split_indices, temporal_split_indices  # noqa: E402
 
 
 class _FixturePipeline:
@@ -75,6 +75,7 @@ class DatasetPipelineTest(unittest.TestCase):
             self.assertEqual(metadata["sample_count"], 2)
             self.assertEqual(len(manifest["frames"]), 3)
             self.assertEqual(len(manifest["sequences"]), 2)
+            self.assertIn("split_group", manifest["sequences"][0])
 
             sequence_path = Path(dataset_dir) / manifest["sequences"][0]["file"]
             self.assertEqual(sequence_path.suffix, ".npz")
@@ -94,6 +95,18 @@ class DatasetPipelineTest(unittest.TestCase):
         self.assertEqual(train_indices, list(range(8)))
         self.assertEqual(validation_indices, list(range(15, 20)))
         self.assertLess(max(train_indices) + 7, min(validation_indices))
+
+    def test_grouped_split_purges_boundary_block(self):
+        groups = ["a", "a", "b", "b", "c", "c", "d", "d", "e", "e"]
+
+        train_indices, validation_indices = grouped_temporal_split_indices(
+            groups,
+            val_fraction=0.4,
+            purge_groups=1,
+        )
+
+        self.assertEqual(train_indices, [0, 1, 2, 3])
+        self.assertEqual(validation_indices, [6, 7, 8, 9])
 
     def test_regular_segments_do_not_bridge_observation_gaps(self):
         start = datetime.datetime(2026, 5, 30, tzinfo=datetime.UTC)
