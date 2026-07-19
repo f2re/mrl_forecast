@@ -19,7 +19,13 @@ from radar_pipeline import RadarDecodeError, RadarPipeline, RadarPipelineConfig
 
 NEXRAD_TIMESTAMP = re.compile(r"^[A-Z0-9]{4}(\d{8})_(\d{6})")
 DWD_TIMESTAMP = re.compile(r"DBZH_00-(\d{12})", re.IGNORECASE)
-SAMPLE_FORMAT = "npz-reflectivity-mask-v1"
+SAMPLE_FORMAT = "npz-radar-quality-v2"
+QUALITY_FIELDS = (
+    "valid_mask",
+    "coverage_mask",
+    "clutter_mask",
+    "interpolation_weight",
+)
 SPLIT_BLOCK_HOURS = 3
 
 
@@ -102,28 +108,29 @@ def regular_frame_segments(frames, step_minutes: int, tolerance_minutes: int = 4
     return segments
 
 
-def _sequence_arrays(frames) -> tuple[np.ndarray, np.ndarray]:
-    reflectivity = np.stack([frame.data for frame in frames], axis=0).astype(np.float32)
-    valid_mask = np.stack([frame.valid_mask for frame in frames], axis=0).astype(bool)
-    return reflectivity, valid_mask
+def _sequence_arrays(frames) -> dict[str, np.ndarray]:
+    return {
+        "reflectivity": np.stack([frame.data for frame in frames], axis=0).astype(np.float32),
+        "valid_mask": np.stack([frame.valid_mask for frame in frames], axis=0).astype(bool),
+        "coverage_mask": np.stack([frame.coverage_mask for frame in frames], axis=0).astype(bool),
+        "clutter_mask": np.stack([frame.clutter_mask for frame in frames], axis=0).astype(bool),
+        "interpolation_weight": np.stack(
+            [frame.interpolation_weight for frame in frames],
+            axis=0,
+        ).astype(np.float32),
+    }
 
 
 def _save_sequence(
     path: pathlib.Path,
-    reflectivity: np.ndarray,
-    valid_mask: np.ndarray,
+    arrays: dict[str, np.ndarray],
     frames,
 ) -> None:
     timestamps = np.asarray(
         [frame.timestamp_utc.isoformat() for frame in frames],
         dtype="U32",
     )
-    np.savez_compressed(
-        path,
-        reflectivity=reflectivity,
-        valid_mask=valid_mask,
-        timestamps_utc=timestamps,
-    )
+    np.savez_compressed(path, **arrays, timestamps_utc=timestamps)
 
 
 def process_archive_directory(
@@ -136,7 +143,7 @@ def process_archive_directory(
     grid_profile: str = "canonical",
     time_step_minutes: int = FORECAST_STEP_MINUTES,
 ):
-    """Grid observed radar files and save masked sequences plus provenance metadata."""
+    """Grid observed radar files and save quality-aware sequences and metadata."""
     archive_path = pathlib.Path(archive_dir).resolve()
     files = sorted(
         path
@@ -180,6 +187,7 @@ def process_archive_directory(
         "station": station,
         "sequence_length": sequence_length,
         "sample_format": SAMPLE_FORMAT,
+        "quality_fields": list(QUALITY_FIELDS),
         "grid_profile": grid_profile,
         "time_step_minutes": time_step_minutes,
         "split_block_hours": SPLIT_BLOCK_HOURS,
@@ -206,6 +214,7 @@ def process_archive_directory(
                     "source_file": path.name,
                     "timestamp_utc": frame.timestamp_utc.isoformat(),
                     "status": frame.status,
+                    "quality": frame.quality_summary(),
                     "qc": frame.qc,
                     "provenance": frame.provenance,
                 }
@@ -234,9 +243,9 @@ def process_archive_directory(
             if any(frame.status != "observed" for frame in selected):
                 raise ValueError("Production datasets cannot contain non-observed frames")
             filename = f"seq_{len(sequences):04d}.npz"
-            reflectivity, valid_mask = _sequence_arrays(selected)
-            _save_sequence(output_dir / filename, reflectivity, valid_mask, selected)
-            statistics = summarize_sequence(reflectivity, valid_mask)
+            arrays = _sequence_arrays(selected)
+            _save_sequence(output_dir / filename, arrays, selected)
+            statistics = summarize_sequence(arrays["reflectivity"], arrays["valid_mask"])
             sequences.append(
                 {
                     "file": filename,
@@ -248,6 +257,12 @@ def process_archive_directory(
                     "end_time_utc": selected[-1].timestamp_utc.isoformat(),
                     "event_class": statistics["event_class"],
                     "statistics": statistics,
+                    "quality": {
+                        "mean_valid_fraction": float(arrays["valid_mask"].mean()),
+                        "mean_coverage_fraction": float(arrays["coverage_mask"].mean()),
+                        "mean_clutter_fraction": float(arrays["clutter_mask"].mean()),
+                        "mean_interpolation_weight": float(arrays["interpolation_weight"].mean()),
+                    },
                 }
             )
     if not sequences:
@@ -261,6 +276,7 @@ def process_archive_directory(
     manifest = {
         "pipeline": radar_pipeline.metadata(),
         "sample_format": SAMPLE_FORMAT,
+        "quality_fields": list(QUALITY_FIELDS),
         "station": station,
         "frames": frame_manifest,
         "sequences": sequences,
@@ -291,7 +307,7 @@ def process_archive_directory(
         metadata["catalog_error"] = str(exc)
     save_metadata(str(output_dir), metadata)
 
-    print(f"Saved {len(sequences)} masked sequences to {output_dir}")
+    print(f"Saved {len(sequences)} quality-aware sequences to {output_dir}")
     return str(output_dir)
 
 
