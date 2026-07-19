@@ -1,4 +1,4 @@
-"""Training datasets for masked radar sequences."""
+"""Training datasets for quality-aware radar sequences."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from event_catalog import dry_echo_balance_weights
 
 
 class RadarSequenceDataset(Dataset):
-    """Load new masked NPZ sequences and legacy NPY sequences."""
+    """Load quality-aware NPZ sequences and legacy NPY sequences."""
 
     def __init__(self, data_dir: str, input_length: int = 4, target_length: int = 4):
         self.data_dir = pathlib.Path(data_dir)
@@ -57,21 +57,21 @@ class RadarSequenceDataset(Dataset):
         return len(self.files)
 
     def __getitem__(self, index: int):
-        values, valid_mask = self._load_arrays(self.files[index])
+        values, effective_mask = self._load_arrays(self.files[index])
         if values.shape[0] < self.required_length:
             raise ValueError(f"Sequence {self.files[index]} is shorter than {self.required_length} frames")
 
         values = np.clip(np.nan_to_num(values, nan=0.0), 0.0, MAX_DBZ).astype(np.float32)
         values = values[:, np.newaxis, :, :] / MAX_DBZ
-        valid_mask = valid_mask[:, np.newaxis, :, :].astype(np.float32)
+        effective_mask = effective_mask[:, np.newaxis, :, :].astype(np.float32)
 
         split = self.input_length
         end = split + self.target_length
         return (
             torch.from_numpy(values[:split]),
             torch.from_numpy(values[split:end]),
-            torch.from_numpy(valid_mask[:split]),
-            torch.from_numpy(valid_mask[split:end]),
+            torch.from_numpy(effective_mask[:split]),
+            torch.from_numpy(effective_mask[split:end]),
         )
 
     def _load_sequence_catalog(self) -> dict[str, dict]:
@@ -91,25 +91,51 @@ class RadarSequenceDataset(Dataset):
     @staticmethod
     def _load_arrays(path: pathlib.Path) -> Tuple[np.ndarray, np.ndarray]:
         if path.suffix == ".npz":
-            with np.load(path) as payload:
+            with np.load(path, allow_pickle=False) as payload:
                 if "reflectivity" in payload:
-                    values = payload["reflectivity"]
+                    values = np.asarray(payload["reflectivity"], dtype=np.float32)
                 elif "arr_0" in payload:
-                    values = payload["arr_0"]
+                    values = np.asarray(payload["arr_0"], dtype=np.float32)
                 else:
                     raise ValueError(f"NPZ sequence {path} has no reflectivity array")
-                valid_mask = payload["valid_mask"] if "valid_mask" in payload else np.isfinite(values)
+                valid = np.asarray(
+                    payload["valid_mask"] if "valid_mask" in payload else np.isfinite(values),
+                    dtype=bool,
+                )
+                coverage = np.asarray(
+                    payload["coverage_mask"] if "coverage_mask" in payload else np.ones_like(valid),
+                    dtype=bool,
+                )
+                clutter = np.asarray(
+                    payload["clutter_mask"] if "clutter_mask" in payload else np.zeros_like(valid),
+                    dtype=bool,
+                )
+                weights = np.asarray(
+                    payload["interpolation_weight"]
+                    if "interpolation_weight" in payload
+                    else valid.astype(np.float32),
+                    dtype=np.float32,
+                )
         else:
-            values = np.load(path)
-            valid_mask = np.isfinite(values)
+            values = np.asarray(np.load(path, allow_pickle=False), dtype=np.float32)
+            valid = np.isfinite(values)
+            coverage = valid.copy()
+            clutter = np.zeros_like(valid)
+            weights = valid.astype(np.float32)
 
-        values = np.asarray(values, dtype=np.float32)
-        valid_mask = np.asarray(valid_mask, dtype=bool)
         if values.ndim != 3:
             raise ValueError(f"Expected [T,H,W] sequence in {path}, got shape {values.shape}")
-        if valid_mask.shape != values.shape:
-            raise ValueError(f"valid_mask shape {valid_mask.shape} does not match {values.shape} in {path}")
-        return values, valid_mask
+        for name, array in (
+            ("valid_mask", valid),
+            ("coverage_mask", coverage),
+            ("clutter_mask", clutter),
+            ("interpolation_weight", weights),
+        ):
+            if array.shape != values.shape:
+                raise ValueError(f"{name} shape {array.shape} does not match {values.shape} in {path}")
+
+        effective = valid & coverage & ~clutter & np.isfinite(weights) & (weights > 0.0)
+        return values, effective
 
 
 def sample_classes_for_dataset(dataset: Dataset) -> list[str]:
