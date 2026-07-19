@@ -167,11 +167,8 @@ class JobStore:
         path = pathlib.Path(job["log_path"])
         if not path.exists():
             return ""
-        with path.open("r", encoding="utf-8", errors="replace") as file:
-            file.seek(0, os.SEEK_END)
-            size = file.tell()
-            file.seek(max(0, size - max_chars))
-            return file.read()
+        data = path.read_bytes()
+        return data[-max_chars:].decode("utf-8", errors="replace")
 
     @staticmethod
     def _normalise(row: sqlite3.Row, include_command: bool = False) -> dict[str, Any]:
