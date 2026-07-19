@@ -11,6 +11,7 @@ from typing import Optional
 
 import numpy as np
 
+from event_catalog import class_counts, summarize_sequence
 from metadata_utils import load_metadata, save_metadata
 from radar_pipeline import RadarDecodeError, RadarPipeline, RadarPipelineConfig
 
@@ -67,9 +68,18 @@ def regular_frame_segments(frames, step_minutes: int, tolerance_minutes: int = 4
     return segments
 
 
-def _save_sequence(path: pathlib.Path, frames) -> None:
+def _sequence_arrays(frames) -> tuple[np.ndarray, np.ndarray]:
     reflectivity = np.stack([frame.data for frame in frames], axis=0).astype(np.float32)
     valid_mask = np.stack([frame.valid_mask for frame in frames], axis=0).astype(bool)
+    return reflectivity, valid_mask
+
+
+def _save_sequence(
+    path: pathlib.Path,
+    reflectivity: np.ndarray,
+    valid_mask: np.ndarray,
+    frames,
+) -> None:
     timestamps = np.asarray(
         [frame.timestamp_utc.isoformat() for frame in frames],
         dtype="U32",
@@ -171,10 +181,9 @@ def process_archive_directory(
             if any(frame.status != "observed" for frame in selected):
                 raise ValueError("Production datasets cannot contain non-observed frames")
             filename = f"seq_{len(sequences):04d}.npz"
-            _save_sequence(output_dir / filename, selected)
-            sequence_valid_fraction = float(
-                np.mean(np.stack([frame.valid_mask for frame in selected], axis=0))
-            )
+            reflectivity, valid_mask = _sequence_arrays(selected)
+            _save_sequence(output_dir / filename, reflectivity, valid_mask, selected)
+            statistics = summarize_sequence(reflectivity, valid_mask)
             sequences.append(
                 {
                     "file": filename,
@@ -183,7 +192,8 @@ def process_archive_directory(
                     "frame_indices": [frame_indices[id(frame)] for frame in selected],
                     "start_time_utc": selected[0].timestamp_utc.isoformat(),
                     "end_time_utc": selected[-1].timestamp_utc.isoformat(),
-                    "valid_fraction": sequence_valid_fraction,
+                    "event_class": statistics["event_class"],
+                    "statistics": statistics,
                 }
             )
     if not sequences:
@@ -192,6 +202,7 @@ def process_archive_directory(
         save_metadata(str(output_dir), metadata)
         raise ValueError("No regular observed sequences after cadence quality control")
 
+    counts = class_counts(item["event_class"] for item in sequences)
     manifest = {
         "pipeline": radar_pipeline.metadata(),
         "sample_format": SAMPLE_FORMAT,
@@ -200,6 +211,7 @@ def process_archive_directory(
         "sequences": sequences,
         "decode_errors": errors,
         "regular_segment_count": len(segments),
+        "class_counts": counts,
     }
     with open(output_dir / "manifest.json", "w", encoding="utf-8") as file:
         json.dump(manifest, file, indent=2, ensure_ascii=False)
@@ -210,6 +222,7 @@ def process_archive_directory(
     metadata["selected_frame_count"] = sum(len(segment) for segment in segments)
     metadata["regular_segment_count"] = len(segments)
     metadata["decode_error_count"] = len(errors)
+    metadata["class_counts"] = counts
     save_metadata(str(output_dir), metadata)
     print(f"Saved {len(sequences)} masked sequences to {output_dir}")
     return str(output_dir)
