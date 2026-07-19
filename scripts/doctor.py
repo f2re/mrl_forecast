@@ -18,6 +18,7 @@ REQUIRED_MODULES = [
     "numpy",
     "flask",
     "xarray",
+    "h5py",
     "matplotlib",
     "pyart",
     "nexradaws",
@@ -50,15 +51,8 @@ def check_disk() -> dict:
     }
 
 
-def check_aws(station: str, date: str) -> dict:
-    command = [
-        sys.executable,
-        str(ROOT / "scripts" / "check_aws_source.py"),
-        "--station",
-        station,
-        "--date",
-        date,
-    ]
+def run_source_check(script_name: str, arguments: list[str]) -> dict:
+    command = [sys.executable, str(ROOT / "scripts" / script_name), *arguments]
     result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
     return {
         "ok": result.returncode == 0,
@@ -70,7 +64,9 @@ def check_aws(station: str, date: str) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check-aws", action="store_true")
+    parser.add_argument("--check-dwd", action="store_true")
     parser.add_argument("--station", default="KOKX")
+    parser.add_argument("--dwd-station", default="ess")
     parser.add_argument("--date", default="2024-05-20")
     args = parser.parse_args()
 
@@ -81,11 +77,18 @@ def main() -> int:
         "disk": check_disk(),
     }
     if args.check_aws:
-        report["aws"] = check_aws(args.station, args.date)
+        report["aws"] = run_source_check(
+            "check_aws_source.py",
+            ["--station", args.station, "--date", args.date],
+        )
+    if args.check_dwd:
+        report["dwd"] = run_source_check(
+            "check_dwd_source.py",
+            ["--station", args.dwd_station],
+        )
     print(json.dumps(report, indent=2, ensure_ascii=False))
     return 0 if all(item["ok"] for item in report.values()) else 1
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
