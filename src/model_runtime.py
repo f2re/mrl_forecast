@@ -10,7 +10,12 @@ import torch
 
 from convlstm import ConvLSTM
 from phys_evolution import MRLPhysEvolution
-from radar_pipeline import CANONICAL_PIPELINE_VERSION, PIPELINE_VERSION, RadarPipeline
+from radar_pipeline import (
+    CANONICAL_PIPELINE_VERSION,
+    PIPELINE_VERSION,
+    RadarPipeline,
+    RadarPipelineConfig,
+)
 
 MAX_DBZ = 70.0
 SUPPORTED_PIPELINES = {PIPELINE_VERSION, CANONICAL_PIPELINE_VERSION}
@@ -47,9 +52,17 @@ class ModelRuntime:
         return str(self.info.get("model_architecture", "unknown"))
 
     def pipeline(self) -> RadarPipeline:
+        """Return a gridding pipeline aligned with both model grid and cadence."""
+
         if self.info.get("pipeline_version") == CANONICAL_PIPELINE_VERSION:
-            return RadarPipeline.canonical()
-        return RadarPipeline()
+            config = RadarPipelineConfig.canonical(
+                time_step_minutes=self.forecast_step_minutes,
+            )
+        else:
+            config = RadarPipelineConfig(
+                time_step_minutes=self.forecast_step_minutes,
+            )
+        return RadarPipeline(config=config)
 
     def load(self, checkpoint_path: str) -> Dict[str, Any]:
         path = pathlib.Path(checkpoint_path)
