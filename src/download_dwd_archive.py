@@ -10,6 +10,7 @@ import pathlib
 
 from dwd_source import DWDOpenDataAdapter
 from metadata_utils import save_metadata
+from radar_catalog import RadarCatalog
 
 
 def download_dwd_data(
@@ -81,6 +82,14 @@ def download_dwd_data(
     metadata["status"] = "completed"
     metadata["error_count"] = len(metadata["errors"])
     save_metadata(str(output_dir), metadata)
+    try:
+        RadarCatalog().index_archive(str(output_dir))
+        metadata["catalog_indexed"] = True
+    except Exception as exc:
+        metadata["catalog_indexed"] = False
+        metadata["catalog_error"] = str(exc)
+    save_metadata(str(output_dir), metadata)
+
     print(f"Downloaded {metadata['downloaded_count']} DWD files to {output_dir}")
     return str(output_dir)
 
