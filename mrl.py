@@ -33,6 +33,11 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--dwd-station", default="ess")
     doctor.add_argument("--date", default="2024-05-20")
 
+    sources = commands.add_parser("sources", help="Проверить discovery и visual-only источники")
+    sources.add_argument("--source", choices=("all", "wis2", "meteoinfo", "rainviewer"), default="all")
+    sources.add_argument("--limit", type=int, default=100)
+    sources.add_argument("--download-meteoinfo")
+
     download = commands.add_parser("download", help="Скачать открытый радарный архив")
     download.add_argument("--source", choices=("noaa", "dwd"), default="noaa")
     download.add_argument("--station", required=True)
@@ -74,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     benchmark = commands.add_parser("benchmark", help="Измерить CPU latency и RAM")
     benchmark.add_argument("--model-path", required=True)
-    benchmark.add_argument("--threads", type=int, default=0)
+    benchmark.add_argument("--threads", type=int)
     benchmark.add_argument("--warmup", type=int, default=1)
     benchmark.add_argument("--repeats", type=int, default=5)
     benchmark.add_argument("--save", action="store_true")
@@ -101,6 +106,12 @@ def main() -> int:
         if args.check_dwd:
             command.append("--check-dwd")
         return _run("scripts/doctor.py", command)
+
+    if args.command == "sources":
+        command = ["--source", args.source, "--limit", args.limit]
+        if args.download_meteoinfo:
+            command.extend(["--download-meteoinfo", args.download_meteoinfo])
+        return _run("scripts/check_open_radar_sources.py", command)
 
     if args.command == "download":
         script = "src/download_archive.py" if args.source == "noaa" else "src/download_dwd_archive.py"
@@ -164,10 +175,11 @@ def main() -> int:
     if args.command == "benchmark":
         command = [
             "--model-path", args.model_path,
-            "--threads", args.threads,
             "--warmup", args.warmup,
             "--repeats", args.repeats,
         ]
+        if args.threads is not None:
+            command.extend(["--threads", args.threads])
         if args.save:
             command.append("--save")
         return _run("scripts/benchmark_cpu.py", command)
