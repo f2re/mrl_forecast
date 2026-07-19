@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train and validate the ConvLSTM radar nowcasting baseline."""
+"""Train radar nowcasting baselines and the physics-guided evolution model."""
 
 from __future__ import annotations
 
@@ -16,12 +16,14 @@ import numpy as np
 import torch
 from torch.utils.data import ConcatDataset, DataLoader, Subset, WeightedRandomSampler
 
-from config import FORECAST_STEP_MINUTES, MAX_DBZ
 from convlstm import ConvLSTM, ConvLSTMCell
 from datasets import RadarSequenceDataset, balanced_sample_weights
 from forecast_quality import advection_forecast, is_uniform_forecast, threshold_metrics_by_lead_time
-from losses import MaskedMSELoss, masked_mse
+from losses import MaskedMSELoss, PhysicsEvolutionLoss, masked_mse
 from metadata_utils import load_metadata, save_metadata
+from phys_evolution import MRLPhysEvolution
+
+MAX_DBZ = 70.0
 
 
 def temporal_split_indices(sample_count: int, overlap_frames: int, val_fraction: float):
@@ -54,28 +56,38 @@ def build_temporal_datasets(datasets, val_fraction):
     return ConcatDataset(train_parts), ConcatDataset(validation_parts)
 
 
-def train_epoch(model, dataloader, criterion, optimizer, device):
+def _forward_model(model, x, x_mask, architecture):
+    if architecture == "phys-evolution":
+        return model(x, x_mask)
+    prediction, states = model(x)
+    return prediction, {"states": states}
+
+
+def train_epoch(model, dataloader, criterion, optimizer, device, architecture):
     model.train()
     total_loss = 0.0
-    for x, y, _x_mask, y_mask in dataloader:
-        x, y, y_mask = x.to(device), y.to(device), y_mask.to(device)
+    for x, y, x_mask, y_mask in dataloader:
+        x, y = x.to(device), y.to(device)
+        x_mask, y_mask = x_mask.to(device), y_mask.to(device)
         optimizer.zero_grad()
-        prediction, _ = model(x)
-        loss = criterion(prediction, y, y_mask)
+        prediction, diagnostics = _forward_model(model, x, x_mask, architecture)
+        loss = criterion(prediction, y, y_mask, diagnostics)
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         optimizer.step()
         total_loss += loss.item()
     return total_loss / len(dataloader)
 
 
-def validate_epoch(model, dataloader, criterion, device):
+def validate_epoch(model, dataloader, criterion, device, architecture):
     model.eval()
     total_loss = 0.0
     with torch.no_grad():
-        for x, y, _x_mask, y_mask in dataloader:
-            x, y, y_mask = x.to(device), y.to(device), y_mask.to(device)
-            prediction, _ = model(x)
-            total_loss += criterion(prediction, y, y_mask).item()
+        for x, y, x_mask, y_mask in dataloader:
+            x, y = x.to(device), y.to(device)
+            x_mask, y_mask = x_mask.to(device), y_mask.to(device)
+            prediction, diagnostics = _forward_model(model, x, x_mask, architecture)
+            total_loss += criterion(prediction, y, y_mask, diagnostics).item()
     return total_loss / len(dataloader)
 
 
@@ -94,7 +106,7 @@ def _masked_numpy_mse(prediction, target, valid_mask):
     return float(np.mean((np.asarray(prediction)[valid] - np.asarray(target)[valid]) ** 2))
 
 
-def evaluate_model_quality(model, dataloader, device):
+def evaluate_model_quality(model, dataloader, device, architecture):
     """Compare model, persistence and global advection on valid pixels."""
 
     model.eval()
@@ -105,14 +117,25 @@ def evaluate_model_quality(model, dataloader, device):
     targets = []
     masks = []
     uniform_anomaly = False
+    diagnostic_values = {"motion_pixels": [], "growth_proxy": [], "decay_proxy": [], "uncertainty": []}
 
     with torch.no_grad():
-        for x, y, _x_mask, y_mask in dataloader:
-            x, y, y_mask = x.to(device), y.to(device), y_mask.to(device)
-            prediction, _ = model(x)
+        for x, y, x_mask, y_mask in dataloader:
+            x, y = x.to(device), y.to(device)
+            x_mask, y_mask = x_mask.to(device), y_mask.to(device)
+            prediction, diagnostics = _forward_model(model, x, x_mask, architecture)
             persistence = x[:, -1:].expand_as(y)
             model_losses.append(masked_mse(prediction, y, y_mask).item())
             persistence_losses.append(masked_mse(persistence, y, y_mask).item())
+
+            if architecture == "phys-evolution":
+                motion = diagnostics["motion"]
+                diagnostic_values["motion_pixels"].append(
+                    torch.sqrt(motion[:, :, 0] ** 2 + motion[:, :, 1] ** 2).mean().item()
+                )
+                diagnostic_values["growth_proxy"].append(diagnostics["growth"].mean().item())
+                diagnostic_values["decay_proxy"].append(diagnostics["decay"].mean().item())
+                diagnostic_values["uncertainty"].append(diagnostics["uncertainty"].mean().item())
 
             for history, forecast, target, target_mask in zip(
                 x.cpu().numpy(),
@@ -147,6 +170,11 @@ def evaluate_model_quality(model, dataloader, device):
             valid_mask=np.stack(masks),
         ),
     }
+    if architecture == "phys-evolution":
+        metrics["evolution_diagnostics"] = {
+            name: float(np.mean(values)) if values else None
+            for name, values in diagnostic_values.items()
+        }
     metrics["quality_gate_passed"] = quality_gate_passes(metrics)
     return metrics
 
@@ -162,7 +190,7 @@ def save_history(model_dir, history):
     plt.plot(history["train_loss"], label="Train Loss")
     plt.plot(history["val_loss"], label="Validation Loss")
     plt.xlabel("Epoch")
-    plt.ylabel("Masked MSE")
+    plt.ylabel("Loss")
     plt.legend()
     plt.grid(True)
     plt.savefig(os.path.join(model_dir, "learning_curve.png"))
@@ -208,8 +236,38 @@ def _load_datasets(data_dirs, input_length, target_length):
     return datasets, provenance, pipeline_versions, time_steps, grids
 
 
+def _build_model(args, device):
+    if args.architecture == "phys-evolution":
+        config = {
+            "input_channels": 3,
+            "base_channels": args.base_channels,
+            "hidden_channels": args.hidden_channels,
+            "output_steps": args.target_length,
+            "max_motion_pixels": args.max_motion_pixels,
+            "max_evolution_per_step": args.max_evolution_per_step,
+        }
+        return MRLPhysEvolution(**config).to(device), PhysicsEvolutionLoss(), config
+
+    config = {
+        "input_channels": 1,
+        "hidden_channels": [args.hidden_channels, args.hidden_channels],
+        "kernel_size": (3, 3),
+        "output_steps": args.target_length,
+    }
+    return ConvLSTM(**config).to(device), MaskedMSELoss(), config
+
+
 def _save_checkpoint(
-    path, model, args, hidden_channels, pipeline_version, forecast_step_minutes, grid, val_loss, epoch, metrics
+    path,
+    model,
+    args,
+    model_config,
+    pipeline_version,
+    forecast_step_minutes,
+    grid,
+    val_loss,
+    epoch,
+    metrics,
 ):
     torch.save(
         {
@@ -217,12 +275,12 @@ def _save_checkpoint(
             "hyperparameters": vars(args),
             "input_length": args.input_length,
             "target_length": args.target_length,
-            "hidden_channels": [hidden_channels, hidden_channels],
+            "model_config": model_config,
             "pipeline_version": pipeline_version,
             "forecast_step_minutes": forecast_step_minutes,
             "grid": grid,
-            "model_architecture": "convlstm_baseline",
-            "loss": "masked_mse",
+            "model_architecture": args.architecture,
+            "loss": "physics_evolution" if args.architecture == "phys-evolution" else "masked_mse",
             "metrics": {"best_val_loss": val_loss, "epoch": epoch, **metrics},
         },
         path,
@@ -232,13 +290,17 @@ def _save_checkpoint(
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dirs", required=True, help="Comma-separated processed datasets")
-    parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--architecture", choices=("phys-evolution", "convlstm"), default="phys-evolution")
+    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--val-split", type=float, default=0.2)
     parser.add_argument("--input-length", type=int, default=4)
     parser.add_argument("--target-length", type=int, default=4)
-    parser.add_argument("--hidden-channels", type=int, default=32)
+    parser.add_argument("--base-channels", type=int, default=16)
+    parser.add_argument("--hidden-channels", type=int, default=24)
+    parser.add_argument("--max-motion-pixels", type=float, default=14.0)
+    parser.add_argument("--max-evolution-per-step", type=float, default=0.08)
     parser.add_argument("--output-dir", default="models/registry")
     parser.add_argument(
         "--balanced-sampling",
@@ -295,15 +357,8 @@ def main():
     )
     validation_loader = DataLoader(validation_dataset, batch_size=args.batch_size)
 
-    hidden_channels = args.hidden_channels
-    model = ConvLSTM(
-        input_dim=1,
-        hidden_dim=[hidden_channels, hidden_channels],
-        kernel_size=(3, 3),
-        output_steps=args.target_length,
-    ).to(device)
+    model, criterion, model_config = _build_model(args, device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    criterion = MaskedMSELoss()
 
     model_id = f"model_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     model_dir = os.path.join(args.output_dir, model_id)
@@ -311,8 +366,9 @@ def main():
     metadata = {
         "type": "model",
         "model_id": model_id,
-        "model_architecture": "convlstm_baseline",
-        "loss": "masked_mse",
+        "model_architecture": args.architecture,
+        "model_config": model_config,
+        "loss": "physics_evolution" if args.architecture == "phys-evolution" else "masked_mse",
         "sampling": "dry_echo_50_50" if sampler is not None else "natural",
         "hyperparameters": vars(args),
         "training_data": provenance,
@@ -330,9 +386,15 @@ def main():
     best_metrics = None
     try:
         for epoch in range(1, args.epochs + 1):
-            train_loss = train_epoch(model, train_loader, criterion, optimizer, device)
-            val_loss = validate_epoch(model, validation_loader, criterion, device)
-            metrics = evaluate_model_quality(model, validation_loader, device)
+            train_loss = train_epoch(
+                model, train_loader, criterion, optimizer, device, args.architecture
+            )
+            val_loss = validate_epoch(
+                model, validation_loader, criterion, device, args.architecture
+            )
+            metrics = evaluate_model_quality(
+                model, validation_loader, device, args.architecture
+            )
             history["train_loss"].append(train_loss)
             history["val_loss"].append(val_loss)
             print(
@@ -354,7 +416,7 @@ def main():
                     os.path.join(model_dir, "best_model.pt"),
                     model,
                     args,
-                    hidden_channels,
+                    model_config,
                     pipeline_version,
                     forecast_step_minutes,
                     model_grid,
