@@ -8,7 +8,7 @@
         :root {
             color-scheme: light;
             --bg: #f3f4f7;
-            --surface: rgba(255, 255, 255, .82);
+            --surface: rgba(255, 255, 255, .84);
             --surface-solid: #fff;
             --text: #17181b;
             --muted: #6e7078;
@@ -24,7 +24,7 @@
         [data-theme="dark"] {
             color-scheme: dark;
             --bg: #101114;
-            --surface: rgba(29, 30, 35, .84);
+            --surface: rgba(29, 30, 35, .86);
             --surface-solid: #1d1e23;
             --text: #f6f6f8;
             --muted: #a5a6ad;
@@ -35,30 +35,30 @@
         * { box-sizing: border-box; }
         body {
             margin: 0;
+            min-height: 100vh;
+            color: var(--text);
             background:
                 radial-gradient(circle at 12% 0%, rgba(80, 150, 255, .16), transparent 28rem),
                 radial-gradient(circle at 100% 100%, rgba(106, 94, 255, .11), transparent 32rem),
                 var(--bg);
-            color: var(--text);
             font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-            min-height: 100vh;
         }
         button, input, select { font: inherit; }
         button { cursor: pointer; }
         .app { display: grid; grid-template-columns: 245px minmax(0, 1fr); min-height: 100vh; }
         .sidebar {
-            position: sticky; top: 0; height: 100vh; padding: 24px 16px;
+            position: sticky; top: 0; height: 100vh; padding: 24px 16px; z-index: 20;
             border-right: 1px solid var(--line); background: rgba(245, 246, 249, .68);
-            backdrop-filter: blur(28px); z-index: 20;
+            backdrop-filter: blur(28px);
         }
-        [data-theme="dark"] .sidebar { background: rgba(20, 21, 25, .70); }
+        [data-theme="dark"] .sidebar { background: rgba(20, 21, 25, .72); }
         .brand { display: flex; align-items: center; gap: 12px; padding: 4px 10px 26px; }
         .brand-mark {
             width: 42px; height: 42px; border-radius: 13px; display: grid; place-items: center;
             color: white; font-size: 22px; background: linear-gradient(145deg, #0792ff, #635bff);
             box-shadow: 0 8px 22px rgba(40, 113, 255, .30);
         }
-        .brand strong { display: block; font-size: 17px; }
+        .brand strong, .brand small { display: block; }
         .brand small { color: var(--muted); }
         .nav { display: grid; gap: 5px; }
         .nav button {
@@ -76,7 +76,7 @@
         .topbar { display: flex; justify-content: space-between; gap: 20px; align-items: center; margin-bottom: 24px; }
         .topbar h1 { margin: 0; font-size: clamp(26px, 3vw, 38px); letter-spacing: -.04em; }
         .topbar p { color: var(--muted); margin: 5px 0 0; }
-        .top-actions { display: flex; gap: 9px; align-items: center; }
+        .top-actions, .row-actions, .source-flags, .diagnostics { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
         .icon-button, .button {
             border: 1px solid var(--line); color: var(--text); background: var(--surface);
             border-radius: 13px; min-height: 42px; padding: 0 15px; box-shadow: 0 4px 16px rgba(0,0,0,.04);
@@ -85,6 +85,7 @@
         .button.primary { background: var(--accent); color: white; border-color: transparent; }
         .button.danger { color: var(--bad); }
         .button:disabled { opacity: .45; cursor: default; }
+        .mini { min-height: 33px; padding: 0 10px; border-radius: 10px; font-size: 13px; }
         .pane { display: none; animation: appear .22s ease; }
         .pane.active { display: block; }
         @keyframes appear { from { opacity: 0; transform: translateY(5px); } }
@@ -101,7 +102,7 @@
         .card-head h2 { font-size: 20px; }
         .card-head h3 { font-size: 16px; }
         .metric { padding: 20px; }
-        .metric small { color: var(--muted); }
+        .metric small, .list-item .meta small { color: var(--muted); }
         .metric strong { display: block; font-size: 32px; margin-top: 7px; letter-spacing: -.04em; }
         .metric .hint { color: var(--muted); font-size: 13px; margin-top: 5px; }
         .section-title { display: flex; justify-content: space-between; align-items: end; gap: 15px; margin: 30px 2px 13px; }
@@ -110,13 +111,11 @@
         .list { display: grid; gap: 10px; }
         .list-item {
             border: 1px solid var(--line); border-radius: 16px; padding: 14px 15px;
-            display: flex; align-items: center; justify-content: space-between; gap: 14px; background: rgba(255,255,255,.18);
+            display: flex; align-items: center; justify-content: space-between; gap: 14px;
+            background: rgba(255,255,255,.18);
         }
         .list-item .meta { min-width: 0; }
         .list-item .meta strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .list-item .meta small { color: var(--muted); }
-        .row-actions { display: flex; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
-        .mini { min-height: 33px; padding: 0 10px; border-radius: 10px; font-size: 13px; }
         .badge { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 5px 9px; font-size: 12px; font-weight: 650; background: var(--line); }
         .badge.good { color: var(--good); background: rgba(31,157,85,.12); }
         .badge.warn { color: var(--warn); background: rgba(217,130,0,.13); }
@@ -130,15 +129,16 @@
             color: var(--text); background: var(--surface-solid); outline: none;
         }
         input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-        .check { display: flex; grid-template-columns: none; align-items: center; gap: 9px; color: var(--text); }
+        .check { display: flex; align-items: center; gap: 9px; color: var(--text); }
         .check input { width: 18px; height: 18px; }
         .empty { color: var(--muted); text-align: center; padding: 34px 12px; }
         .source-card .symbol { font-size: 28px; }
         .source-card h3 { margin: 12px 0 4px; }
         .source-card p { color: var(--muted); min-height: 40px; font-size: 13px; }
-        .source-flags { display: flex; gap: 6px; flex-wrap: wrap; }
         .forecast-layout { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 18px; }
         .viewer { min-height: 590px; display: flex; flex-direction: column; }
+        .viewer-head-actions { display: flex; gap: 8px; align-items: center; }
+        .viewer-head-actions select { width: auto; min-width: 155px; padding: 8px 10px; }
         .viewer-stage { flex: 1; min-height: 460px; background: #dfe3e9; display: grid; place-items: center; overflow: hidden; }
         [data-theme="dark"] .viewer-stage { background: #090a0d; }
         .viewer-stage img { display: none; width: 100%; height: 100%; object-fit: contain; }
@@ -146,7 +146,7 @@
         .viewer-controls { padding: 14px 18px 18px; display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: center; }
         .viewer-controls input { padding: 0; }
         .frame-label { grid-column: 1 / -1; font-weight: 650; text-align: center; }
-        .diagnostics { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 13px; }
+        .diagnostics { margin-top: 13px; }
         .dataset-picker { max-height: 310px; overflow: auto; display: grid; gap: 8px; padding-right: 3px; }
         .dataset-option { display: flex; gap: 10px; align-items: flex-start; padding: 11px; border: 1px solid var(--line); border-radius: 13px; }
         .dataset-option input { width: 18px; margin-top: 2px; }
@@ -183,10 +183,13 @@
             .grid.cols-2, .grid.cols-3, .form-grid { grid-template-columns: 1fr; }
             .metric strong { font-size: 27px; }
             .viewer-stage { min-height: 360px; }
+            .viewer-head-actions { align-items: stretch; flex-direction: column; }
+            .viewer-head-actions select { width: 100%; }
             .job-line { grid-template-columns: 1fr; }
             .mobile-nav {
-                display: flex; position: fixed; z-index: 50; left: 10px; right: 10px; bottom: max(10px, env(safe-area-inset-bottom));
-                overflow-x: auto; padding: 8px; gap: 4px; border: 1px solid var(--line); border-radius: 20px;
+                display: flex; position: fixed; z-index: 50; left: 10px; right: 10px;
+                bottom: max(10px, env(safe-area-inset-bottom)); overflow-x: auto;
+                padding: 8px; gap: 4px; border: 1px solid var(--line); border-radius: 20px;
                 background: var(--surface); backdrop-filter: blur(28px); box-shadow: var(--shadow);
             }
             .mobile-nav button { flex: 1 0 64px; border: 0; background: transparent; color: var(--muted); border-radius: 13px; padding: 8px 6px; font-size: 11px; }
@@ -242,8 +245,15 @@
                     </form>
                     <div class="diagnostics" id="diagnostics"></div>
                 </div></div>
-                <div class="card viewer"><div class="card-head"><h2>Поле отражаемости</h2><button class="button mini" id="exportBtn" disabled>Экспорт NetCDF</button></div>
-                    <div class="viewer-stage"><div class="placeholder" id="viewerPlaceholder">Выберите модель и источник, затем запустите прогноз</div><img id="viewerImage" alt="Карта отражаемости"></div>
+                <div class="card viewer">
+                    <div class="card-head">
+                        <h2 id="viewerTitle">Поле отражаемости</h2>
+                        <div class="viewer-head-actions">
+                            <select id="layerSelect" disabled aria-label="Слой прогноза"><option value="reflectivity">Отражаемость</option></select>
+                            <button class="button mini" id="exportBtn" disabled>Экспорт NetCDF</button>
+                        </div>
+                    </div>
+                    <div class="viewer-stage"><div class="placeholder" id="viewerPlaceholder">Выберите модель и источник, затем запустите прогноз</div><img id="viewerImage" alt="Карта прогноза"></div>
                     <div class="viewer-controls"><button class="icon-button" id="playBtn" disabled>▶</button><input type="range" id="frameSlider" min="0" max="0" value="0" disabled><div class="frame-label" id="frameLabel">Нет данных</div></div>
                 </div>
             </div>
@@ -275,6 +285,7 @@
             <div class="grid cols-2">
                 <div class="card"><div class="card-head"><h2>Выборка</h2></div><div class="card-body"><div class="dataset-picker" id="datasetPicker"></div></div></div>
                 <div class="card"><div class="card-head"><h2>Параметры обучения</h2></div><div class="card-body"><form id="trainForm">
+                    <label>Архитектура<select name="architecture"><option value="phys-evolution">MRL-PhysEvolution · перенос + рост/распад</option><option value="convlstm">ConvLSTM · контрольный baseline</option></select></label>
                     <div class="form-grid"><label>Эпохи<input type="number" name="epochs" value="20" min="1"></label><label>Batch size<input type="number" name="batch_size" value="1" min="1" max="64"></label></div>
                     <div class="form-grid"><label>Кадров истории<input type="number" name="input_length" value="4" min="2" max="24"></label><label>Кадров прогноза<input type="number" name="lead_time" value="4" min="1" max="24"></label></div>
                     <div class="form-grid"><label>Learning rate<input name="lr" value="1e-4"></label><label>Validation split<input type="number" name="val_split" value="0.2" min="0.05" max="0.5" step="0.05"></label></div>
@@ -306,17 +317,30 @@
 <div class="toast" id="toast"></div>
 
 <script>
-const state = {sources: [], raw: [], datasets: [], models: [], jobs: [], frames: [], labels: [], frame: 0, timer: null};
+const state = {
+    sources: [], raw: [], datasets: [], models: [], jobs: [],
+    layers: {}, layer: 'reflectivity', frames: [], labels: [], frame: 0, timer: null
+};
 const panes = {
-    overview: ['Обзор', 'Состояние системы и последние операции'], forecast: ['Прогноз', 'Наблюдения и экспериментальный nowcast'],
-    sources: ['Источники', 'Количественные, discovery и визуальные контуры'], data: ['Архив', 'Загрузка и canonical-предобработка'],
-    training: ['Обучение', 'Выборка, балансировка и параметры'], jobs: ['Задания', 'Очередь и журналы локального worker'], models: ['Модели', 'Реестр, метрики и выбор рабочей модели']
+    overview: ['Обзор', 'Состояние системы и последние операции'],
+    forecast: ['Прогноз', 'Наблюдения и экспериментальный nowcast'],
+    sources: ['Источники', 'Количественные, discovery и визуальные контуры'],
+    data: ['Архив', 'Загрузка и canonical-предобработка'],
+    training: ['Обучение', 'Выборка, балансировка и параметры'],
+    jobs: ['Задания', 'Очередь и журналы локального worker'],
+    models: ['Модели', 'Реестр, метрики и выбор рабочей модели']
+};
+const layerTitles = {
+    reflectivity: 'Поле отражаемости', motion: 'Перенос радиоэха',
+    growth: 'Рост радиоэха', decay: 'Распад радиоэха', uncertainty: 'Неопределённость'
 };
 
 async function api(url, options = {}) {
     const response = await fetch(url, options);
     const data = await response.json().catch(() => ({}));
-    if (!response.ok || data.error || data.success === false) throw new Error(data.error || data.message || `HTTP ${response.status}`);
+    if (!response.ok || data.error || data.success === false) {
+        throw new Error(data.error || data.message || `HTTP ${response.status}`);
+    }
     return data;
 }
 function escapeHtml(value) { return String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
@@ -328,28 +352,35 @@ function empty(text) { return `<div class="empty">${escapeHtml(text)}</div>`; }
 function showPane(name) {
     document.querySelectorAll('.pane').forEach(el => el.classList.toggle('active', el.id === `pane-${name}`));
     document.querySelectorAll('[data-pane]').forEach(el => el.classList.toggle('active', el.dataset.pane === name));
-    document.getElementById('pageTitle').textContent = panes[name][0]; document.getElementById('pageSubtitle').textContent = panes[name][1];
+    document.getElementById('pageTitle').textContent = panes[name][0];
+    document.getElementById('pageSubtitle').textContent = panes[name][1];
     window.scrollTo({top: 0, behavior: 'smooth'});
 }
 document.querySelectorAll('[data-pane]').forEach(el => el.addEventListener('click', () => showPane(el.dataset.pane)));
 document.querySelectorAll('[data-go]').forEach(el => el.addEventListener('click', () => showPane(el.dataset.go)));
 
-document.getElementById('themeBtn').onclick = () => { const dark = document.documentElement.dataset.theme === 'dark'; document.documentElement.dataset.theme = dark ? '' : 'dark'; localStorage.setItem('theme', dark ? 'light' : 'dark'); };
+document.getElementById('themeBtn').onclick = () => {
+    const dark = document.documentElement.dataset.theme === 'dark';
+    document.documentElement.dataset.theme = dark ? '' : 'dark';
+    localStorage.setItem('theme', dark ? 'light' : 'dark');
+};
 if (localStorage.getItem('theme') === 'dark' || (!localStorage.getItem('theme') && matchMedia('(prefers-color-scheme: dark)').matches)) document.documentElement.dataset.theme = 'dark';
 
 function renderSources() {
     const html = state.sources.map(source => `<div class="card source-card"><div class="card-body"><div class="symbol">${source.training_allowed ? '◉' : source.visualization_allowed ? '◌' : '⌕'}</div><h3>${escapeHtml(source.source_id)}</h3><p>${escapeHtml(source.notes || source.native_format)}</p><div class="source-flags"><span class="badge ${source.training_allowed ? 'good' : 'warn'}">${source.training_allowed ? 'обучение' : 'не для train'}</span><span class="badge">${escapeHtml(source.native_format)}</span></div></div></div>`).join('');
     document.getElementById('sourcesGrid').innerHTML = html || empty('Источники не зарегистрированы');
-    document.getElementById('overviewSources').innerHTML = html ? state.sources.slice(0, 3).map(source => `<div class="card"><div class="card-body"><strong>${escapeHtml(source.source_id)}</strong><p style="color:var(--muted);font-size:13px">${escapeHtml(source.native_format)}</p>${source.training_allowed ? '<span class="badge good">quantitative</span>' : '<span class="badge warn">restricted</span>'}</div></div>`).join('') : empty('Нет данных');
+    document.getElementById('overviewSources').innerHTML = state.sources.length ? state.sources.slice(0, 3).map(source => `<div class="card"><div class="card-body"><strong>${escapeHtml(source.source_id)}</strong><p style="color:var(--muted);font-size:13px">${escapeHtml(source.native_format)}</p>${source.training_allowed ? '<span class="badge good">quantitative</span>' : '<span class="badge warn">restricted</span>'}</div></div>`).join('') : empty('Нет данных');
 }
 function renderRaw() {
-    const select = document.getElementById('prepareArchive'); select.innerHTML = '<option value="">Выберите архив</option>' + state.raw.filter(x => x.status === 'completed').map(x => `<option value="${escapeHtml(x.path)}">${escapeHtml(x.folder_name)} · ${escapeHtml(x.station || '')}</option>`).join('');
+    const select = document.getElementById('prepareArchive');
+    select.innerHTML = '<option value="">Выберите архив</option>' + state.raw.filter(item => item.status === 'completed').map(item => `<option value="${escapeHtml(item.path)}">${escapeHtml(item.folder_name)} · ${escapeHtml(item.station || '')}</option>`).join('');
     document.getElementById('rawList').innerHTML = state.raw.length ? state.raw.map(item => `<div class="list-item"><div class="meta"><strong>${escapeHtml(item.folder_name)}</strong><small>${escapeHtml(item.station || '—')} · ${escapeHtml(item.date || '')} · ${item.downloaded_count || 0} файлов</small></div><div class="row-actions">${statusBadge(item.status)}<button class="button mini" onclick="chooseArchive('${escapeHtml(item.path)}')">Подготовить</button></div></div>`).join('') : empty('Архив пока пуст');
 }
 function chooseArchive(path) { document.getElementById('prepareArchive').value = path; showPane('data'); document.getElementById('prepareArchive').focus(); }
-function classSummary(counts = {}) { return Object.entries(counts).filter(([,v]) => v).map(([k,v]) => `${k}: ${v}`).join(' · ') || 'классы ещё не рассчитаны'; }
+function classSummary(counts = {}) { return Object.entries(counts).filter(([, value]) => value).map(([key, value]) => `${key}: ${value}`).join(' · ') || 'классы ещё не рассчитаны'; }
 function renderDatasets() {
-    document.getElementById('datasetPicker').innerHTML = state.datasets.length ? state.datasets.filter(x => x.status === 'completed').map(item => `<label class="dataset-option"><input type="checkbox" class="dataset-check" value="${escapeHtml(item.path)}"><span><strong>${escapeHtml(item.folder_name)}</strong><small style="display:block;color:var(--muted)">${item.sample_count || 0} sequences · ${escapeHtml(item.pipeline?.pipeline_version || '')}<br>${escapeHtml(classSummary(item.class_counts))}</small></span></label>`).join('') : empty('Сначала подготовьте датасет');
+    const completed = state.datasets.filter(item => item.status === 'completed');
+    document.getElementById('datasetPicker').innerHTML = completed.length ? completed.map(item => `<label class="dataset-option"><input type="checkbox" class="dataset-check" value="${escapeHtml(item.path)}"><span><strong>${escapeHtml(item.folder_name)}</strong><small style="display:block;color:var(--muted)">${item.sample_count || 0} sequences · ${escapeHtml(item.pipeline?.pipeline_version || '')}<br>${escapeHtml(classSummary(item.class_counts))}</small></span></label>`).join('') : empty('Сначала подготовьте датасет');
     document.getElementById('datasetStats').innerHTML = state.datasets.length ? state.datasets.map(item => `<div class="card"><div class="card-body"><strong>${escapeHtml(item.folder_name)}</strong><p style="color:var(--muted);font-size:13px">${escapeHtml(classSummary(item.class_counts))}</p><span class="badge info">${item.sample_count || 0} samples</span></div></div>`).join('') : empty('Нет статистики');
 }
 function renderModels() {
@@ -363,35 +394,88 @@ function renderMetrics() { document.getElementById('metricRaw').textContent = st
 async function refreshAll(silent = false) {
     try {
         const [sources, raw, datasets, models, jobs] = await Promise.all([api('/api/sources'), api('/api/inventory/raw'), api('/api/inventory/datasets'), api('/api/inventory/models'), api('/api/jobs')]);
-        Object.assign(state, {sources, raw, datasets, models, jobs}); renderSources(); renderRaw(); renderDatasets(); renderModels(); renderJobs(); renderMetrics();
+        Object.assign(state, {sources, raw, datasets, models, jobs});
+        renderSources(); renderRaw(); renderDatasets(); renderModels(); renderJobs(); renderMetrics();
         if (!silent) toast('Данные обновлены');
     } catch (error) { toast(error.message, true); }
 }
-document.getElementById('refreshBtn').onclick = () => refreshAll(); document.getElementById('refreshJobs').onclick = () => refreshAll(true);
+document.getElementById('refreshBtn').onclick = () => refreshAll();
+document.getElementById('refreshJobs').onclick = () => refreshAll(true);
 
-async function submitJob(form, url) { const data = await api(url, {method:'POST', body:new FormData(form)}); toast(`Задание ${data.task_id.slice(0,8)} поставлено в очередь`); form.reset(); await refreshAll(true); showPane('jobs'); }
-document.getElementById('downloadForm').onsubmit = async e => { e.preventDefault(); try { await submitJob(e.target, '/api/task/download'); } catch (err) { toast(err.message, true); } };
-document.getElementById('prepareForm').onsubmit = async e => { e.preventDefault(); try { await submitJob(e.target, '/api/task/prepare'); } catch (err) { toast(err.message, true); } };
-document.getElementById('trainForm').onsubmit = async e => { e.preventDefault(); try { const form = new FormData(e.target); document.querySelectorAll('.dataset-check:checked').forEach(el => form.append('dataset_dirs[]', el.value)); if (!form.getAll('dataset_dirs[]').length) throw new Error('Выберите хотя бы один датасет'); const data = await api('/api/task/train', {method:'POST', body:form}); toast(`Обучение ${data.task_id.slice(0,8)} поставлено в очередь`); await refreshAll(true); showPane('jobs'); } catch (err) { toast(err.message, true); } };
+async function submitJob(form, url) {
+    const data = await api(url, {method:'POST', body:new FormData(form)});
+    toast(`Задание ${data.task_id.slice(0,8)} поставлено в очередь`);
+    await refreshAll(true); showPane('jobs');
+}
+document.getElementById('downloadForm').onsubmit = async event => { event.preventDefault(); try { await submitJob(event.target, '/api/task/download'); } catch (error) { toast(error.message, true); } };
+document.getElementById('prepareForm').onsubmit = async event => { event.preventDefault(); try { await submitJob(event.target, '/api/task/prepare'); } catch (error) { toast(error.message, true); } };
+document.getElementById('trainForm').onsubmit = async event => {
+    event.preventDefault();
+    try {
+        const form = new FormData(event.target);
+        document.querySelectorAll('.dataset-check:checked').forEach(element => form.append('dataset_dirs[]', element.value));
+        if (!form.getAll('dataset_dirs[]').length) throw new Error('Выберите хотя бы один датасет');
+        const data = await api('/api/task/train', {method:'POST', body:form});
+        toast(`Обучение ${data.task_id.slice(0,8)} поставлено в очередь`);
+        await refreshAll(true); showPane('jobs');
+    } catch (error) { toast(error.message, true); }
+};
 
-async function openLog(id) { try { const data = await api(`/api/task/logs/${id}`); document.getElementById('logTitle').textContent = `${data.kind} · ${data.status}`; document.getElementById('logContent').textContent = data.logs || 'Журнал пока пуст'; logDialog.showModal(); } catch (err) { toast(err.message, true); } }
-async function cancelJob(id) { try { await api(`/api/jobs/${id}/cancel`, {method:'POST'}); toast('Запрошена отмена'); refreshAll(true); } catch (err) { toast(err.message, true); } }
-async function loadModel(path, name) { try { const body = new FormData(); body.append('model_path', path); await api('/api/model/load', {method:'POST', body}); document.getElementById('activeModel').textContent = name; toast('Модель загружена'); } catch (err) { toast(err.message, true); } }
-async function showModel(id) { try { const data = await api(`/api/model/details/${id}`); document.getElementById('logTitle').textContent = `Модель ${id}`; document.getElementById('logContent').textContent = JSON.stringify(data.metadata, null, 2); logDialog.showModal(); } catch (err) { toast(err.message, true); } }
+async function openLog(id) { try { const data = await api(`/api/task/logs/${id}`); document.getElementById('logTitle').textContent = `${data.kind} · ${data.status}`; document.getElementById('logContent').textContent = data.logs || 'Журнал пока пуст'; logDialog.showModal(); } catch (error) { toast(error.message, true); } }
+async function cancelJob(id) { try { await api(`/api/jobs/${id}/cancel`, {method:'POST'}); toast('Запрошена отмена'); refreshAll(true); } catch (error) { toast(error.message, true); } }
+async function loadModel(path, name) { try { const body = new FormData(); body.append('model_path', path); await api('/api/model/load', {method:'POST', body}); document.getElementById('activeModel').textContent = name; toast('Модель загружена'); } catch (error) { toast(error.message, true); } }
+async function showModel(id) { try { const data = await api(`/api/model/details/${encodeURIComponent(id)}`); document.getElementById('logTitle').textContent = `Модель ${id}`; document.getElementById('logContent').textContent = JSON.stringify(data.metadata, null, 2); logDialog.showModal(); } catch (error) { toast(error.message, true); } }
 
 const sourceSelect = document.getElementById('forecastSource');
 function syncSourceFields() { const value = sourceSelect.value; document.getElementById('localField').hidden = value !== 'local'; document.getElementById('uploadField').hidden = value !== 'upload'; document.getElementById('stationField').hidden = !['aws','ftp'].includes(value); }
 sourceSelect.onchange = syncSourceFields; syncSourceFields();
 
-function setFrame(index) { if (!state.frames.length) return; state.frame = Math.max(0, Math.min(index, state.frames.length - 1)); viewerImage.src = state.frames[state.frame]; viewerImage.style.display = 'block'; viewerPlaceholder.style.display = 'none'; frameSlider.value = state.frame; frameLabel.textContent = state.labels[state.frame]; }
 function stopPlayer() { clearInterval(state.timer); state.timer = null; playBtn.textContent = '▶'; }
+function setFrame(index) { if (!state.frames.length) return; state.frame = Math.max(0, Math.min(index, state.frames.length - 1)); viewerImage.src = state.frames[state.frame]; viewerImage.style.display = 'block'; viewerPlaceholder.style.display = 'none'; frameSlider.value = state.frame; frameLabel.textContent = state.labels[state.frame]; }
+function selectLayer(name) {
+    stopPlayer(); state.layer = name;
+    const items = name === 'reflectivity' ? [...(state.layers.history || []), ...(state.layers.reflectivity || [])] : (state.layers[name] || []);
+    state.frames = items.map(item => `data:image/png;base64,${item.data}`);
+    state.labels = items.map(item => item.label);
+    viewerTitle.textContent = layerTitles[name] || name;
+    layerSelect.value = name;
+    frameSlider.max = Math.max(state.frames.length - 1, 0);
+    frameSlider.disabled = !state.frames.length;
+    playBtn.disabled = !state.frames.length;
+    if (state.frames.length) setFrame(name === 'reflectivity' ? Math.max((state.layers.history || []).length - 1, 0) : 0);
+}
+function populateLayers() {
+    const names = ['reflectivity', 'motion', 'growth', 'decay', 'uncertainty'].filter(name => (state.layers[name] || []).length);
+    layerSelect.innerHTML = names.map(name => `<option value="${name}">${escapeHtml(layerTitles[name] || name)}</option>`).join('');
+    layerSelect.disabled = !names.length;
+    selectLayer(names.includes('reflectivity') ? 'reflectivity' : names[0]);
+}
+layerSelect.onchange = event => selectLayer(event.target.value);
 playBtn.onclick = () => { if (state.timer) return stopPlayer(); playBtn.textContent = '❚❚'; state.timer = setInterval(() => setFrame((state.frame + 1) % state.frames.length), 850); };
-frameSlider.oninput = e => { stopPlayer(); setFrame(Number(e.target.value)); };
+frameSlider.oninput = event => { stopPlayer(); setFrame(Number(event.target.value)); };
 exportBtn.onclick = () => location.href = '/api/export/netcdf';
 
-document.getElementById('forecastForm').onsubmit = async e => { e.preventDefault(); stopPlayer(); try { const data = await api('/api/predict', {method:'POST', body:new FormData(e.target)}); state.frames = [...data.history, ...data.forecast].map(item => `data:image/png;base64,${item.data}`); state.labels = [...data.history, ...data.forecast].map(item => item.label); frameSlider.max = state.frames.length - 1; frameSlider.disabled = false; playBtn.disabled = false; exportBtn.disabled = false; setFrame(data.history.length - 1); diagnostics.innerHTML = `<span class="badge info">${escapeHtml(data.pipeline_version)}</span><span class="badge">${data.grid?.width || '—'}×${data.grid?.height || '—'}</span><span class="badge">max ${Number(data.diagnostics.max_dbz).toFixed(1)} dBZ</span><span class="badge warn">экспериментальный продукт</span>`; } catch (err) { toast(err.message, true); } };
+document.getElementById('forecastForm').onsubmit = async event => {
+    event.preventDefault(); stopPlayer();
+    try {
+        const data = await api('/api/predict', {method:'POST', body:new FormData(event.target)});
+        state.layers = {history: data.history || [], ...(data.layers || {reflectivity: data.forecast || []})};
+        if (!state.layers.reflectivity) state.layers.reflectivity = data.forecast || [];
+        populateLayers(); exportBtn.disabled = false;
+        const evolution = data.evolution_diagnostics || {};
+        diagnostics.innerHTML = `<span class="badge info">${escapeHtml(data.model_architecture)}</span><span class="badge">${escapeHtml(data.pipeline_version)}</span><span class="badge">${data.grid?.width || '—'}×${data.grid?.height || '—'}</span><span class="badge">max ${Number(data.diagnostics.max_dbz).toFixed(1)} dBZ</span>${evolution.mean_motion_pixels != null ? `<span class="badge">motion ${Number(evolution.mean_motion_pixels).toFixed(2)} px</span>` : ''}<span class="badge warn">экспериментальный продукт</span>`;
+    } catch (error) { toast(error.message, true); }
+};
 
-async function loadStations() { try { const stations = await api('/api/ftp/stations'); const options = stations.map(s => `<option value="${escapeHtml(s.code)}">${escapeHtml(s.code.toUpperCase())} · ${escapeHtml(s.name)}</option>`).join(''); if (options) { forecastStation.innerHTML = options; downloadStation.innerHTML = options.replaceAll('value="', 'value="').replaceAll(/value="([a-z0-9]+)"/g, (_,v) => `value="${v.toUpperCase()}"`); } } catch (_) {} }
+async function loadStations() {
+    try {
+        const stations = await api('/api/ftp/stations');
+        const forecastOptions = stations.map(station => `<option value="${escapeHtml(station.code)}">${escapeHtml(station.code.toUpperCase())} · ${escapeHtml(station.name)}</option>`).join('');
+        const downloadOptions = stations.map(station => `<option value="${escapeHtml(station.code.toUpperCase())}">${escapeHtml(station.code.toUpperCase())} · ${escapeHtml(station.name)}</option>`).join('');
+        if (forecastOptions) forecastStation.innerHTML = forecastOptions;
+        if (downloadOptions) downloadStation.innerHTML = downloadOptions;
+    } catch (_) {}
+}
 
 document.getElementById('downloadDate').valueAsDate = new Date();
 refreshAll(true); loadStations();
