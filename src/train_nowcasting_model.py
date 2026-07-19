@@ -1,25 +1,24 @@
 #!/usr/bin/env python3
-"""
-train_nowcasting_model.py (Pro Version)
-=======================================
-Advanced multi-dataset training for precipitation nowcasting.
-"""
+"""Train and validate the ConvLSTM radar nowcasting baseline."""
+
 import argparse
 import csv
 import os
-import pathlib
 import traceback
 from datetime import datetime
-import numpy as np
-import matplotlib.pyplot as plt
-from typing import Tuple, List, Dict
+from typing import Dict
 
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader, Subset, ConcatDataset
+from torch.utils.data import ConcatDataset, DataLoader, Subset
+
 from config import FORECAST_STEP_MINUTES, MAX_DBZ
-from metadata_utils import save_metadata, load_metadata
+from datasets import RadarSequenceDataset
 from forecast_quality import advection_forecast, is_uniform_forecast, threshold_metrics_by_lead_time
+from losses import MaskedMSELoss, masked_mse
+from metadata_utils import load_metadata, save_metadata
 from radar_pipeline import PIPELINE_VERSION
 
 
@@ -38,50 +37,25 @@ def temporal_split_indices(sample_count: int, overlap_frames: int, val_fraction:
     return train_indices, validation_indices
 
 
-class RadarSequenceDataset(Dataset):
-    def __init__(self, data_dir: str, input_length: int = 4, target_length: int = 4):
-        self.data_dir = pathlib.Path(data_dir)
-        self.files = sorted(list(self.data_dir.glob('*.npy')))
-        self.input_length = input_length
-        self.target_length = target_length
-
-        if len(self.files) > 0:
-            test_data = np.load(self.files[0])
-            actual_len = test_data.shape[0]
-            if actual_len < (input_length + target_length):
-                raise ValueError(f"Dataset sequences (len={actual_len}) are shorter than requested input+target ({input_length}+{target_length})")
-
-    def __len__(self):
-        return len(self.files)
-
-    def __getitem__(self, idx):
-        data = np.load(self.files[idx]).astype(np.float32)
-        data = np.clip(data, 0.0, MAX_DBZ)
-        data = data[:, np.newaxis, :, :]
-        data = data / MAX_DBZ
-        x = data[:self.input_length]
-        y = data[self.input_length : self.input_length + self.target_length]
-        return torch.from_numpy(x), torch.from_numpy(y)
-
-
 class ConvLSTMCell(nn.Module):
     def __init__(self, input_dim, hidden_dim, kernel_size, bias):
-        super(ConvLSTMCell, self).__init__()
+        super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.kernel_size = kernel_size
         self.padding = kernel_size[0] // 2, kernel_size[1] // 2
         self.bias = bias
-        self.conv = nn.Conv2d(in_channels=self.input_dim + self.hidden_dim,
-                              out_channels=4 * self.hidden_dim,
-                              kernel_size=self.kernel_size,
-                              padding=self.padding,
-                              bias=self.bias)
+        self.conv = nn.Conv2d(
+            in_channels=self.input_dim + self.hidden_dim,
+            out_channels=4 * self.hidden_dim,
+            kernel_size=self.kernel_size,
+            padding=self.padding,
+            bias=self.bias,
+        )
 
     def forward(self, input_tensor, cur_state):
         h_cur, c_cur = cur_state
-        combined = torch.cat([input_tensor, h_cur], dim=1)
-        combined_conv = self.conv(combined)
+        combined_conv = self.conv(torch.cat([input_tensor, h_cur], dim=1))
         cc_i, cc_f, cc_o, cc_g = torch.split(combined_conv, self.hidden_dim, dim=1)
         i = torch.sigmoid(cc_i)
         f = torch.sigmoid(cc_f)
@@ -93,14 +67,27 @@ class ConvLSTMCell(nn.Module):
 
     def init_hidden(self, batch_size, image_size):
         height, width = image_size
-        return (torch.zeros(batch_size, self.hidden_dim, height, width, device=self.conv.weight.device),
-                torch.zeros(batch_size, self.hidden_dim, height, width, device=self.conv.weight.device))
+        shape = (batch_size, self.hidden_dim, height, width)
+        return (
+            torch.zeros(*shape, device=self.conv.weight.device),
+            torch.zeros(*shape, device=self.conv.weight.device),
+        )
 
 
 class ConvLSTM(nn.Module):
-    def __init__(self, input_dim=1, hidden_dim=None, kernel_size=(3, 3), num_layers=None, batch_first=True, bias=True,
-                 input_channels=None, hidden_channels=None, output_steps=None):
-        super(ConvLSTM, self).__init__()
+    def __init__(
+        self,
+        input_dim=1,
+        hidden_dim=None,
+        kernel_size=(3, 3),
+        num_layers=None,
+        batch_first=True,
+        bias=True,
+        input_channels=None,
+        hidden_channels=None,
+        output_steps=None,
+    ):
+        super().__init__()
         self.input_dim = input_channels if input_channels is not None else input_dim
         self.hidden_dim = hidden_channels if hidden_channels is not None else hidden_dim
         if self.hidden_dim is None:
@@ -112,65 +99,83 @@ class ConvLSTM(nn.Module):
         self.kernel_size = self._check_kernel_size_consistency(kernel_size)
         self.kernel_size = self._extend_for_multilayer(self.kernel_size, self.num_layers)
         if not len(self.kernel_size) == len(self.hidden_dim) == self.num_layers:
-            raise ValueError('Inconsistent list lengths.')
+            raise ValueError("Inconsistent list lengths")
+
         cells = []
-        for i in range(0, self.num_layers):
-            cur_input_dim = self.input_dim if i == 0 else self.hidden_dim[i - 1]
-            cells.append(ConvLSTMCell(input_dim=cur_input_dim, hidden_dim=self.hidden_dim[i],
-                                           kernel_size=self.kernel_size[i], bias=self.bias))
+        for index in range(self.num_layers):
+            current_input_dim = self.input_dim if index == 0 else self.hidden_dim[index - 1]
+            cells.append(
+                ConvLSTMCell(
+                    input_dim=current_input_dim,
+                    hidden_dim=self.hidden_dim[index],
+                    kernel_size=self.kernel_size[index],
+                    bias=self.bias,
+                )
+            )
         self.cells = nn.ModuleList(cells)
-        self.output_conv = nn.Conv2d(in_channels=self.hidden_dim[-1], out_channels=self.input_dim, kernel_size=1)
+        self.output_conv = nn.Conv2d(self.hidden_dim[-1], self.input_dim, kernel_size=1)
 
     def forward(self, input_tensor, hidden_state=None):
         if not self.batch_first:
             input_tensor = input_tensor.permute(1, 0, 2, 3, 4)
-        b, t, _, h, w = input_tensor.size()
+        batch_size, sequence_length, _, height, width = input_tensor.size()
         if hidden_state is None:
-            hidden_state = self._init_hidden(batch_size=b, image_size=(h, w))
+            hidden_state = self._init_hidden(batch_size=batch_size, image_size=(height, width))
+
         layer_output_list = []
         last_state_list = []
-        seq_len = input_tensor.size(1)
-        cur_layer_input = input_tensor
-        for layer_idx in range(self.num_layers):
-            h_state, c_state = hidden_state[layer_idx]
+        current_layer_input = input_tensor
+        for layer_index in range(self.num_layers):
+            h_state, c_state = hidden_state[layer_index]
             output_inner = []
-            for t in range(seq_len):
-                h_state, c_state = self.cells[layer_idx](input_tensor=cur_layer_input[:, t, :, :, :], cur_state=[h_state, c_state])
+            for time_index in range(sequence_length):
+                h_state, c_state = self.cells[layer_index](
+                    input_tensor=current_layer_input[:, time_index],
+                    cur_state=[h_state, c_state],
+                )
                 output_inner.append(h_state)
             layer_output = torch.stack(output_inner, dim=1)
-            cur_layer_input = layer_output
+            current_layer_input = layer_output
             layer_output_list.append(layer_output)
             last_state_list.append([h_state, c_state])
+
         if self.output_steps is not None:
             predictions = []
-            current_h = layer_output_list[-1][:, -1, :, :, :]
+            current_h = layer_output_list[-1][:, -1]
             for _ in range(self.output_steps):
-                pred_frame = torch.sigmoid(self.output_conv(current_h))
-                predictions.append(pred_frame)
-                prev_layer_h = pred_frame
-                for layer_idx in range(self.num_layers):
-                    h_s, c_s = last_state_list[layer_idx]
-                    h_s, c_s = self.cells[layer_idx](input_tensor=prev_layer_h, cur_state=[h_s, c_s])
-                    last_state_list[layer_idx] = [h_s, c_s]
-                    prev_layer_h = h_s
-                current_h = prev_layer_h
+                predicted_frame = torch.sigmoid(self.output_conv(current_h))
+                predictions.append(predicted_frame)
+                previous_layer_h = predicted_frame
+                for layer_index in range(self.num_layers):
+                    h_state, c_state = last_state_list[layer_index]
+                    h_state, c_state = self.cells[layer_index](
+                        input_tensor=previous_layer_h,
+                        cur_state=[h_state, c_state],
+                    )
+                    last_state_list[layer_index] = [h_state, c_state]
+                    previous_layer_h = h_state
+                current_h = previous_layer_h
             prediction_tensor = torch.stack(predictions, dim=1)
             if not self.batch_first:
                 return prediction_tensor.permute(1, 0, 2, 3, 4), last_state_list
             return prediction_tensor, last_state_list
+
         final_output = torch.sigmoid(
-            self.output_conv(layer_output_list[-1].view(-1, self.hidden_dim[-1], h, w))
+            self.output_conv(layer_output_list[-1].view(-1, self.hidden_dim[-1], height, width))
         )
-        final_output = final_output.view(b, seq_len, self.input_dim, h, w)
+        final_output = final_output.view(
+            batch_size,
+            sequence_length,
+            self.input_dim,
+            height,
+            width,
+        )
         if not self.batch_first:
             return final_output.permute(1, 0, 2, 3, 4), last_state_list
         return final_output, last_state_list
 
     def _init_hidden(self, batch_size, image_size):
-        init_states = []
-        for i in range(self.num_layers):
-            init_states.append(self.cells[i].init_hidden(batch_size, image_size))
-        return init_states
+        return [cell.init_hidden(batch_size, image_size) for cell in self.cells]
 
     @staticmethod
     def _check_kernel_size_consistency(kernel_size):
@@ -179,27 +184,29 @@ class ConvLSTM(nn.Module):
         if isinstance(kernel_size, tuple):
             return kernel_size
         if isinstance(kernel_size, list):
-            if all(isinstance(elem, tuple) for elem in kernel_size):
+            if all(isinstance(element, tuple) for element in kernel_size):
                 return kernel_size
-            if all(isinstance(elem, int) for elem in kernel_size):
-                return [(e, e) for e in kernel_size]
-        raise ValueError('`kernel_size` must be int, tuple or list of tuples/ints')
+            if all(isinstance(element, int) for element in kernel_size):
+                return [(element, element) for element in kernel_size]
+        raise ValueError("kernel_size must be int, tuple or list of tuples/ints")
 
     @staticmethod
-    def _extend_for_multilayer(param, num_layers):
-        if not isinstance(param, list):
-            param = [param] * num_layers
-        return param
+    def _extend_for_multilayer(parameter, number_of_layers):
+        if not isinstance(parameter, list):
+            parameter = [parameter] * number_of_layers
+        return parameter
 
 
 def train_epoch(model, dataloader, criterion, optimizer, device):
     model.train()
-    total_loss = 0
-    for x, y in dataloader:
-        x, y = x.to(device), y.to(device)
+    total_loss = 0.0
+    for x, y, _x_mask, y_mask in dataloader:
+        x = x.to(device)
+        y = y.to(device)
+        y_mask = y_mask.to(device)
         optimizer.zero_grad()
         output, _ = model(x)
-        loss = criterion(output, y)
+        loss = criterion(output, y, y_mask)
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
@@ -208,13 +215,14 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
 
 def validate_epoch(model, dataloader, criterion, device):
     model.eval()
-    total_loss = 0
+    total_loss = 0.0
     with torch.no_grad():
-        for x, y in dataloader:
-            x, y = x.to(device), y.to(device)
+        for x, y, _x_mask, y_mask in dataloader:
+            x = x.to(device)
+            y = y.to(device)
+            y_mask = y_mask.to(device)
             output, _ = model(x)
-            loss = criterion(output, y)
-            total_loss += loss.item()
+            total_loss += criterion(output, y, y_mask).item()
     return total_loss / len(dataloader)
 
 
@@ -227,8 +235,15 @@ def quality_gate_passes(metrics: Dict[str, float]) -> bool:
     )
 
 
+def _masked_numpy_mse(prediction: np.ndarray, target: np.ndarray, valid_mask: np.ndarray):
+    mask = np.asarray(valid_mask, dtype=bool)
+    if not np.any(mask):
+        return None
+    return float(np.mean((np.asarray(prediction)[mask] - np.asarray(target)[mask]) ** 2))
+
+
 def evaluate_model_quality(model, dataloader, device):
-    """Compare the trained model with persistence on leakage-free validation data."""
+    """Compare the trained model with baselines on valid validation pixels."""
     model.eval()
     model_losses = []
     persistence_losses = []
@@ -236,31 +251,49 @@ def evaluate_model_quality(model, dataloader, device):
     uniform_field_anomaly = False
     all_forecasts = []
     all_targets = []
+    all_masks = []
+
     with torch.no_grad():
-        for x, y in dataloader:
-            x, y = x.to(device), y.to(device)
+        for x, y, _x_mask, y_mask in dataloader:
+            x = x.to(device)
+            y = y.to(device)
+            y_mask = y_mask.to(device)
             output, _ = model(x)
             persistence = x[:, -1:, ...].expand_as(y)
-            model_losses.append(torch.mean((output - y) ** 2).item())
-            persistence_losses.append(torch.mean((persistence - y) ** 2).item())
+            model_losses.append(masked_mse(output, y, y_mask).item())
+            persistence_losses.append(masked_mse(persistence, y, y_mask).item())
+
             output_values = output.cpu().numpy()
             target_values = y.cpu().numpy()
             history_values = x.cpu().numpy()
-            for history, forecast, target in zip(history_values, output_values, target_values):
+            mask_values = y_mask.cpu().numpy().astype(bool)
+            for history, forecast, target, target_mask in zip(
+                history_values,
+                output_values,
+                target_values,
+                mask_values,
+            ):
+                valid = target_mask[:, 0]
                 values_dbz = forecast[:, 0] * MAX_DBZ
-                uniform_field_anomaly = uniform_field_anomaly or is_uniform_forecast(values_dbz)
+                checked_values = np.where(valid, values_dbz, 0.0)
+                uniform_field_anomaly = uniform_field_anomaly or is_uniform_forecast(checked_values)
                 advection = advection_forecast(history[:, 0] * MAX_DBZ, forecast.shape[0]) / MAX_DBZ
-                advection_losses.append(float(np.mean((advection - target[:, 0]) ** 2)))
+                advection_loss = _masked_numpy_mse(advection, target[:, 0], valid)
+                if advection_loss is not None:
+                    advection_losses.append(advection_loss)
                 all_forecasts.append(values_dbz)
                 all_targets.append(target[:, 0] * MAX_DBZ)
+                all_masks.append(valid)
+
     metrics = {
         "model_mse": float(np.mean(model_losses)),
         "persistence_mse": float(np.mean(persistence_losses)),
-        "advection_mse": float(np.mean(advection_losses)),
+        "advection_mse": float(np.mean(advection_losses)) if advection_losses else float("inf"),
         "uniform_field_anomaly": bool(uniform_field_anomaly),
         "threshold_metrics": threshold_metrics_by_lead_time(
             np.stack(all_forecasts, axis=0),
             np.stack(all_targets, axis=0),
+            valid_mask=np.stack(all_masks, axis=0),
         ),
     }
     metrics["quality_gate_passed"] = quality_gate_passes(metrics)
@@ -285,25 +318,25 @@ def build_temporal_datasets(datasets, val_split):
 
 def save_plots(model_dir, history):
     plt.figure(figsize=(10, 6))
-    plt.plot(history['train_loss'], label='Train Loss')
-    plt.plot(history['val_loss'], label='Val Loss')
-    plt.title('Training and Validation Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('MSE Loss')
+    plt.plot(history["train_loss"], label="Train Loss")
+    plt.plot(history["val_loss"], label="Val Loss")
+    plt.title("Training and Validation Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Masked MSE Loss")
     plt.legend()
     plt.grid(True)
-    plt.savefig(os.path.join(model_dir, 'learning_curve.png'))
+    plt.savefig(os.path.join(model_dir, "learning_curve.png"))
     plt.close()
 
 
 def save_history(model_dir, history):
     """Persist epoch metrics incrementally so interrupted runs remain inspectable."""
-    path = os.path.join(model_dir, 'history.csv')
-    with open(path, 'w', newline='', encoding='utf-8') as file:
+    path = os.path.join(model_dir, "history.csv")
+    with open(path, "w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
-        writer.writerow(['epoch', 'train_loss', 'val_loss'])
+        writer.writerow(["epoch", "train_loss", "val_loss"])
         for epoch, (train_loss, val_loss) in enumerate(
-            zip(history['train_loss'], history['val_loss']),
+            zip(history["train_loss"], history["val_loss"]),
             start=1,
         ):
             writer.writerow([epoch, train_loss, val_loss])
@@ -311,42 +344,45 @@ def save_history(model_dir, history):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data-dirs', required=True, help="Comma-separated directories with processed datasets")
-    parser.add_argument('--epochs', type=int, default=10)
-    parser.add_argument('--batch-size', type=int, default=4)
-    parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--val-split', type=float, default=0.2)
-    parser.add_argument('--input-length', type=int, default=4)
-    parser.add_argument('--target-length', type=int, default=4)
-    parser.add_argument('--hidden-channels', type=int, default=32)
-    parser.add_argument('--output-dir', default='models/registry')
+    parser.add_argument("--data-dirs", required=True, help="Comma-separated processed dataset directories")
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--val-split", type=float, default=0.2)
+    parser.add_argument("--input-length", type=int, default=4)
+    parser.add_argument("--target-length", type=int, default=4)
+    parser.add_argument("--hidden-channels", type=int, default=32)
+    parser.add_argument("--output-dir", default="models/registry")
     args = parser.parse_args()
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    data_dirs = args.data_dirs.split(',')
     all_datasets = []
     provenance_data = []
     pipeline_versions = set()
-    for d in data_dirs:
-        if os.path.exists(d):
-            meta = load_metadata(d)
-            pipeline_version = (meta or {}).get('pipeline', {}).get('pipeline_version')
-            if (meta or {}).get('status') != 'completed' or not pipeline_version:
-                print(f"Skipping incompatible dataset {d}: completed pipeline metadata is required")
-                continue
-            pipeline_versions.add(pipeline_version)
-            ds = RadarSequenceDataset(d, args.input_length, args.target_length)
-            all_datasets.append(ds)
-            provenance_data.append({
-                "dataset_id": os.path.basename(d),
-                "station": meta.get('station', 'unknown') if meta else 'unknown',
-                "samples": len(ds),
+    for data_dir in args.data_dirs.split(","):
+        if not os.path.exists(data_dir):
+            continue
+        metadata = load_metadata(data_dir)
+        pipeline_version = (metadata or {}).get("pipeline", {}).get("pipeline_version")
+        if (metadata or {}).get("status") != "completed" or not pipeline_version:
+            print(f"Skipping incompatible dataset {data_dir}: completed pipeline metadata is required")
+            continue
+        pipeline_versions.add(pipeline_version)
+        dataset = RadarSequenceDataset(data_dir, args.input_length, args.target_length)
+        all_datasets.append(dataset)
+        provenance_data.append(
+            {
+                "dataset_id": os.path.basename(data_dir),
+                "station": metadata.get("station", "unknown"),
+                "samples": len(dataset),
                 "pipeline_version": pipeline_version,
-                "time_step_minutes": (meta or {}).get('pipeline', {}).get('time_step_minutes'),
-            })
-            print(f"Loaded dataset from {d} ({len(ds)} samples)")
+                "time_step_minutes": metadata.get("pipeline", {}).get("time_step_minutes"),
+                "sample_format": metadata.get("sample_format", "legacy-npy"),
+            }
+        )
+        print(f"Loaded dataset from {data_dir} ({len(dataset)} samples)")
 
     if not all_datasets:
         print("No datasets found!")
@@ -356,19 +392,18 @@ def main():
         return
 
     full_dataset = ConcatDataset(all_datasets)
-    total_samples = len(full_dataset)
-    if total_samples == 0:
-        print("Error: Total number of samples is 0. Cannot proceed with training.")
+    if len(full_dataset) == 0:
+        print("Error: Total number of samples is 0. Cannot proceed with training")
         return
 
     try:
-        train_ds, val_ds = build_temporal_datasets(all_datasets, args.val_split)
+        train_dataset, validation_dataset = build_temporal_datasets(all_datasets, args.val_split)
     except ValueError as exc:
         print(f"Error: {exc}")
         return
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    validation_loader = DataLoader(validation_dataset, batch_size=args.batch_size)
 
     hidden_channels = args.hidden_channels
     model = ConvLSTM(
@@ -380,84 +415,91 @@ def main():
         output_steps=args.target_length,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    criterion = nn.MSELoss()
+    criterion = MaskedMSELoss()
 
     model_id = f"model_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     model_dir = os.path.join(args.output_dir, model_id)
     os.makedirs(model_dir, exist_ok=True)
 
     metadata = {
-        'type': 'model',
-        'model_id': model_id,
-        'model_architecture': 'convlstm_baseline',
-        'hyperparameters': vars(args),
-        'training_data': provenance_data,
-        'pipeline_version': PIPELINE_VERSION,
-        'forecast_step_minutes': FORECAST_STEP_MINUTES,
-        'horizon_minutes': args.target_length * FORECAST_STEP_MINUTES,
-        'status': 'training',
-        'timestamp_created': datetime.now().isoformat(),
+        "type": "model",
+        "model_id": model_id,
+        "model_architecture": "convlstm_baseline",
+        "loss": "masked_mse",
+        "hyperparameters": vars(args),
+        "training_data": provenance_data,
+        "pipeline_version": PIPELINE_VERSION,
+        "forecast_step_minutes": FORECAST_STEP_MINUTES,
+        "horizon_minutes": args.target_length * FORECAST_STEP_MINUTES,
+        "status": "training",
+        "timestamp_created": datetime.now().isoformat(),
     }
     save_metadata(model_dir, metadata)
 
-    history = {'train_loss': [], 'val_loss': []}
-    best_val_loss = float('inf')
+    history = {"train_loss": [], "val_loss": []}
+    best_val_loss = float("inf")
+    best_quality_metrics = None
 
     try:
         for epoch in range(1, args.epochs + 1):
             train_loss = train_epoch(model, train_loader, criterion, optimizer, device)
-            val_loss = validate_epoch(model, val_loader, criterion, device)
-            quality_metrics = evaluate_model_quality(model, val_loader, device)
-            history['train_loss'].append(train_loss)
-            history['val_loss'].append(val_loss)
+            validation_loss = validate_epoch(model, validation_loader, criterion, device)
+            quality_metrics = evaluate_model_quality(model, validation_loader, device)
+            history["train_loss"].append(train_loss)
+            history["val_loss"].append(validation_loss)
             print(
                 f"Epoch {epoch}/{args.epochs}: train_loss={train_loss:.6f}, "
-                f"val_loss={val_loss:.6f}, persistence_mse={quality_metrics['persistence_mse']:.6f}"
+                f"val_loss={validation_loss:.6f}, "
+                f"persistence_mse={quality_metrics['persistence_mse']:.6f}"
             )
             save_plots(model_dir, history)
             save_history(model_dir, history)
-            metadata['current_epoch'] = epoch
-            metadata['metrics'] = {
-                'best_val_loss': min(best_val_loss, val_loss),
-                'best_epoch': metadata.get('metrics', {}).get('best_epoch', epoch),
-                **quality_metrics,
-            }
-            save_metadata(model_dir, metadata)
+            metadata["current_epoch"] = epoch
 
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                checkpoint_path = os.path.join(model_dir, 'best_model.pt')
-                torch.save({
-                    'model_state_dict': model.state_dict(),
-                    'hyperparameters': vars(args),
-                    'input_length': args.input_length,
-                    'target_length': args.target_length,
-                    'hidden_channels': [hidden_channels, hidden_channels],
-                    'pipeline_version': PIPELINE_VERSION,
-                    'forecast_step_minutes': FORECAST_STEP_MINUTES,
-                    'model_architecture': 'convlstm_baseline',
-                    'metrics': {'best_val_loss': best_val_loss, 'epoch': epoch, **quality_metrics},
-                }, checkpoint_path)
-                metadata['metrics'] = {
-                    'best_val_loss': best_val_loss,
-                    'best_epoch': epoch,
+            if validation_loss < best_val_loss:
+                best_val_loss = validation_loss
+                best_quality_metrics = quality_metrics
+                checkpoint_path = os.path.join(model_dir, "best_model.pt")
+                torch.save(
+                    {
+                        "model_state_dict": model.state_dict(),
+                        "hyperparameters": vars(args),
+                        "input_length": args.input_length,
+                        "target_length": args.target_length,
+                        "hidden_channels": [hidden_channels, hidden_channels],
+                        "pipeline_version": PIPELINE_VERSION,
+                        "forecast_step_minutes": FORECAST_STEP_MINUTES,
+                        "model_architecture": "convlstm_baseline",
+                        "loss": "masked_mse",
+                        "metrics": {
+                            "best_val_loss": best_val_loss,
+                            "epoch": epoch,
+                            **quality_metrics,
+                        },
+                    },
+                    checkpoint_path,
+                )
+                metadata["metrics"] = {
+                    "best_val_loss": best_val_loss,
+                    "best_epoch": epoch,
                     **quality_metrics,
                 }
-                save_metadata(model_dir, metadata)
-        metadata['status'] = (
-            'completed'
-            if metadata['metrics']['quality_gate_passed']
-            else 'rejected_quality_gate'
+            save_metadata(model_dir, metadata)
+
+        if best_quality_metrics is None:
+            raise RuntimeError("Training did not produce a valid checkpoint")
+        metadata["status"] = (
+            "completed" if best_quality_metrics["quality_gate_passed"] else "rejected_quality_gate"
         )
         save_metadata(model_dir, metadata)
         print(f"Training complete. Model saved to {model_dir}")
     except Exception as exc:
-        metadata['status'] = 'failed'
-        metadata['error'] = str(exc)
-        metadata['traceback'] = traceback.format_exc()
+        metadata["status"] = "failed"
+        metadata["error"] = str(exc)
+        metadata["traceback"] = traceback.format_exc()
         save_metadata(model_dir, metadata)
         raise
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
