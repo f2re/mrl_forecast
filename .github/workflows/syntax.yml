@@ -1,0 +1,24 @@
+name: Syntax checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile Python sources
+        run: python -m compileall -q src scripts tests
+      - name: Check shell scripts
+        run: |
+          for file in scripts/*.sh; do
+            bash -n "$file"
+          done
+      - name: Check dashboard JavaScript
+        run: node --check src/static/app.js
