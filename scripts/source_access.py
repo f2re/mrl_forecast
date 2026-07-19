@@ -17,6 +17,9 @@ from source_access import CredentialStore  # noqa: E402
 from source_registry import build_default_source_registry  # noqa: E402
 
 
+DEFAULT_REPORT_PATH = ROOT / "data" / "source_health.json"
+
+
 def _date_range(value: str):
     if not value:
         return None, None
@@ -69,6 +72,21 @@ def _print_registration(capabilities) -> None:
             print(f"  {index}. {step}")
 
 
+def _save_report(path_value: str, reports: list[dict]) -> Path:
+    path = Path(path_value)
+    path = (ROOT / path).resolve() if not path.is_absolute() else path.resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "checked_at_utc": datetime.datetime.now(datetime.UTC).isoformat(),
+        "reports": reports,
+    }
+    path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
+    return path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -78,6 +96,10 @@ def main() -> int:
     )
     parser.add_argument("--source", default="all")
     parser.add_argument("--download-test", action="store_true")
+    parser.add_argument("--active-only", action="store_true")
+    parser.add_argument("--max-workers", type=int, default=6)
+    parser.add_argument("--report-path", default=str(DEFAULT_REPORT_PATH))
+    parser.add_argument("--no-save-report", action="store_true")
     parser.add_argument("--output-dir", default="data/source_samples")
     parser.add_argument("--limit", type=int, default=5)
     parser.add_argument("--prefix", default="")
@@ -121,14 +143,20 @@ def main() -> int:
         kwargs = _source_kwargs(args)
         kwargs["download_test"] = args.download_test
         if args.source == "all":
-            report = registry.probe_all(**kwargs)
+            report = registry.probe_all(
+                active_only=args.active_only,
+                max_workers=args.max_workers,
+                **kwargs,
+            )
+        elif args.source == "knmi-radar":
+            source = _create_source(registry, args)
+            result = source.probe(**kwargs)
+            report = [result.to_metadata()]
         else:
-            if args.source == "knmi-radar":
-                source = _create_source(registry, args)
-                result = source.probe(**kwargs)
-                report = [result.to_metadata()]
-            else:
-                report = [registry.probe(args.source, **kwargs)]
+            report = [registry.probe(args.source, **kwargs)]
+        if not args.no_save_report:
+            report_path = _save_report(args.report_path, report)
+            print(f"Отчёт сохранён: {report_path}", file=sys.stderr)
         print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
         return 0 if all(item["status"] not in {"unavailable"} for item in report) else 1
 
@@ -141,7 +169,14 @@ def main() -> int:
     if not files:
         raise RuntimeError(f"Source {args.source} returned no downloadable files")
     result = source.download(files[0], args.output_dir)
-    print(json.dumps({"remote": files[0].to_metadata(), "download": result}, indent=2, ensure_ascii=False, default=str))
+    print(
+        json.dumps(
+            {"remote": files[0].to_metadata(), "download": result},
+            indent=2,
+            ensure_ascii=False,
+            default=str,
+        )
+    )
     return 0
 
 
