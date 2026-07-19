@@ -34,8 +34,8 @@ class RadarSequenceDataset(Dataset):
             for _path, metadata in selected
         ]
         self.sample_groups = [
-            str(metadata.get("split_group") or f"legacy-{index:08d}")
-            for index, (_path, metadata) in enumerate(selected)
+            str(metadata.get("split_group") or "legacy")
+            for _path, metadata in selected
         ]
         self.sample_start_times = [
             metadata.get("start_time_utc")
@@ -141,7 +141,7 @@ def sample_groups_for_dataset(dataset: Dataset) -> list[str]:
         for part in dataset.datasets:
             groups.extend(sample_groups_for_dataset(part))
         return groups
-    return [f"unknown-{index:08d}" for index in range(len(dataset))]
+    return ["unknown"] * len(dataset)
 
 
 def balanced_sample_weights(dataset: Dataset) -> Optional[list[float]]:
