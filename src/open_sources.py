@@ -8,9 +8,7 @@ from __future__ import annotations
 import datetime
 import os
 import pathlib
-import re
 from typing import Any, Dict, List, Optional
-from urllib.parse import urljoin
 
 import requests
 
@@ -24,7 +22,10 @@ class Wis2RadarCatalog:
         "https://wis2-gdc.weather.gc.ca/collections/"
         "wis2-discovery-metadata/items"
     )
-    RUSSIA_BBOX = (19.0, 41.0, 180.0, 82.0)
+    RUSSIA_BBOXES = (
+        (19.0, 41.0, 180.0, 82.0),
+        (-180.0, 41.0, -169.0, 72.0),
+    )
     CAPABILITIES = RadarSourceCapabilities(
         source_id="wis2",
         native_format="OGC API Records",
@@ -60,14 +61,15 @@ class Wis2RadarCatalog:
         return list(payload.get("features", []))
 
     def search_russian_radar(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """Find candidate radar records intersecting the Russian territory bbox."""
+        """Find candidate radar records intersecting Russian territory."""
 
         records: Dict[str, Dict[str, Any]] = {}
         for query in ("weather radar", "radar reflectivity", "radar BUFR"):
-            for feature in self.search(query, bbox=self.RUSSIA_BBOX, limit=limit):
-                record_id = str(feature.get("id") or feature.get("properties", {}).get("id") or "")
-                if record_id:
-                    records[record_id] = feature
+            for bbox in self.RUSSIA_BBOXES:
+                for feature in self.search(query, bbox=bbox, limit=limit):
+                    record_id = str(feature.get("id") or feature.get("properties", {}).get("id") or "")
+                    if record_id:
+                        records[record_id] = feature
         return list(records.values())
 
 
@@ -75,6 +77,7 @@ class MeteoinfoVisualSource:
     """Download the current Meteoinfo radar animation as a visual-only product."""
 
     PAGE_URL = "https://meteoinfo.ru/radanim"
+    DEFAULT_IMAGE_URL = "https://meteoinfo.ru/hmc-output/rmap/phenomena.gif"
     CAPABILITIES = RadarSourceCapabilities(
         source_id="meteoinfo",
         native_format="GIF/PNG composite",
@@ -89,22 +92,7 @@ class MeteoinfoVisualSource:
         self.session = session or requests.Session()
 
     def discover_image_url(self) -> str:
-        explicit_url = os.environ.get("METEOINFO_RADAR_IMAGE_URL")
-        if explicit_url:
-            return explicit_url
-
-        response = self.session.get(self.PAGE_URL, timeout=self.timeout_seconds)
-        response.raise_for_status()
-        candidates = re.findall(r"<img[^>]+src=[\"']([^\"']+)[\"']", response.text, flags=re.IGNORECASE)
-        ranked = [
-            item
-            for item in candidates
-            if any(token in item.lower() for token in ("rad", "phenomena", "radar"))
-            and item.lower().split("?")[0].endswith((".gif", ".png", ".jpg", ".jpeg"))
-        ]
-        if not ranked:
-            raise RuntimeError("Meteoinfo radar image was not found on the radar page")
-        return urljoin(self.PAGE_URL, ranked[0])
+        return os.environ.get("METEOINFO_RADAR_IMAGE_URL", self.DEFAULT_IMAGE_URL)
 
     def fetch_latest(self, output_dir: str) -> pathlib.Path:
         image_url = self.discover_image_url()
