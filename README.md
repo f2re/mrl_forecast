@@ -1,225 +1,200 @@
-# MRL Forecast Pro
+# 🌦️ MRL Forecast Pro
 
-Экспериментальная система прогноза поля радиолокационной отражаемости и зон радиоэха. Результат не является официальным прогнозом интенсивности осадков или предупреждением об опасном явлении.
+Экспериментальная система краткосрочного прогноза поля радиолокационной отражаемости и зон радиоэха.
 
-Документы:
+> ⚠️ Результат не является официальным прогнозом интенсивности осадков, штормовым предупреждением или продукцией Росгидромета.
 
-- [`plan/10-implementation-roadmap.md`](plan/10-implementation-roadmap.md) — текущий статус этапов;
-- [`docs/source-access.md`](docs/source-access.md) — источники, проверки доступа, токены и регистрация.
+## 📚 Документация
 
-## Текущий рабочий контур
+| Документ | Назначение |
+| --- | --- |
+| **[Полное руководство по запуску и эксплуатации](docs/operations-guide.md)** | установка, настройка, источники, загрузка, датасеты, обучение, quality gate, инференс, UI, benchmark и диагностика |
+| [Доступ к международным источникам](docs/source-access.md) | API, S3, токены, регистрация, probe и правила допуска источников |
+| [План реализации](plan/10-implementation-roadmap.md) | фактический статус этапов и дальнейшая разработка |
 
-- canonical grid `512 × 512`, разрешение около `1 км`, локальная AEQD;
-- исходные файлы без изменения, SHA-256 и provenance;
-- NOAA NEXRAD Level II и DWD ODIM HDF5;
-- OPERA ORD, FMI S3, DMI STAC, KNMI API и WIS2 Global Cache;
-- отдельные профили доступа для Météo-France, CEDA, MeteoSwiss, GeoSphere, AURA, NASA и ЦАО NCRadar;
-- SQLite-каталог архивов, отдельных сроков и датасетов;
-- quality-aware `.npz` с отражаемостью, сроками и масками;
-- классификация `dry_valid`, `weak_echo`, `precipitation`, `convective`, `severe_core`, `invalid`;
-- dry/echo 50/50 sampling только в train;
-- purged chronological train/validation/test split;
-- persistence, global shift и local block-motion baselines;
-- CSI, POD, FAR, frequency bias, ETS, FSS и пространственные ошибки;
-- ConvLSTM baseline;
-- `MRL-PhysEvolution` с переносом, ростом, распадом и неопределённостью;
-- общий `ModelRuntime` для терминала и веба;
-- SQLite job runner;
-- адаптивный интерфейс в визуальном языке macOS/iOS;
-- NetCDF с CRS, сроками, provenance и quality-масками;
-- CPU benchmark p50/p95 и RAM;
-- единый CLI `python mrl.py ...`.
-
-## Быстрый старт
+## 🚀 Быстрый старт
 
 ```bash
+git clone https://github.com/f2re/mrl_forecast.git
+cd mrl_forecast
+git checkout main
+
 bash scripts/setup.sh
+source venv/bin/activate
+python mrl.py doctor
 bash scripts/run_app.sh
 ```
 
-Интерфейс: `http://localhost:5005`.
-
-При запуске `scripts/run_app.sh` в фоне выполняется проверка полностью автоматизированных источников. Для каждого источника проверяются:
-
-1. доступность API или S3-каталога;
-2. возможность получить список файлов;
-3. чтение первых 1024 байт тестового файла;
-4. наличие обязательного API key.
-
-Обезличенный отчёт сохраняется в `src/static/source_health.json` и отображается на странице «Источники». Токены и query-параметры подписанных URL в отчёт не попадают.
-
-## Единый CLI
-
-```bash
-python mrl.py --help
-```
-
-Основные команды:
+Интерфейс:
 
 ```text
-doctor
-sources
-download
-prepare
-train
-infer
-catalog
-benchmark
-serve
-worker
+http://localhost:5005
 ```
 
-## Международные источники
+`scripts/run_app.sh` запускает:
 
-### Список адаптеров
-
-```bash
-python mrl.py sources --action list
+```text
+job worker
++ фоновую проверку активных источников
++ веб-интерфейс
 ```
 
-### Автопроверка каталога и скачивания
+## 🧭 Полный рабочий цикл
+
+```text
+источник → raw archive → canonical grid → quality-aware dataset →
+train/validation/test → quality gate → model registry →
+inference → PNG/NPZ/JSON/NetCDF → CPU benchmark
+```
+
+Рекомендуемый порядок первого запуска:
 
 ```bash
+# 1. Проверка окружения
+python mrl.py doctor
+
+# 2. Проверка источников
 python mrl.py sources \
   --action probe \
   --source all \
   --active-only \
   --download-test \
   --limit 1
-```
 
-Отчёт по умолчанию: `data/source_health.json`.
-
-Проверка одного источника:
-
-```bash
-python mrl.py sources \
-  --action probe \
-  --source dmi-radar \
-  --station 06194 \
-  --collection volume \
-  --download-test
-```
-
-### Порядок регистрации
-
-```bash
-python mrl.py sources --action info --source knmi-radar
-python mrl.py sources --action info --source opera-ord
-python mrl.py sources --action info --source meteofrance-radar
-python mrl.py sources --action info --source ncradar-cao
-```
-
-### Безопасный ввод API key
-
-```bash
-python mrl.py sources --action configure --source knmi-radar
-```
-
-Ключ вводится скрыто. По умолчанию он сохраняется в:
-
-```text
-~/.config/mrl_forecast/credentials.json
-```
-
-Файл получает права `0600`. Переменные окружения имеют приоритет над файлом:
-
-```text
-KNMI_API_KEY
-METEOGATE_API_KEY
-METEOFRANCE_API_TOKEN
-EARTHDATA_TOKEN
-```
-
-Путь к хранилищу можно переопределить:
-
-```bash
-export MRL_CREDENTIALS_FILE=/secure/path/mrl_credentials.json
-```
-
-## Скачивание исходных данных
-
-### NOAA NEXRAD Level II
-
-```bash
-python mrl.py download \
-  --source noaa \
-  --station KOKX \
-  --date 2024-05-20 \
-  --count 100
-```
-
-### DWD ODIM HDF5
-
-```bash
+# 3. Скачивание DWD
 python mrl.py download \
   --source dwd \
   --station ess \
   --date 2026-07-19 \
   --count 200
+
+# 4. Подготовка 6 + 6 сроков по 10 минут
+python mrl.py prepare \
+  --archive-dir data/raw/archive/<SESSION> \
+  --seq-len 12 \
+  --grid-profile canonical \
+  --time-step-minutes 10
+
+# 5. Обучение
+python mrl.py train \
+  --data-dirs data/processed_archive/<DATASET_ID> \
+  --architecture phys-evolution \
+  --input-length 6 \
+  --target-length 6 \
+  --val-split 0.2 \
+  --test-split 0.1 \
+  --batch-size 1 \
+  --epochs 20
+
+# 6. CPU benchmark
+python mrl.py benchmark \
+  --model-path models/registry/<MODEL_ID> \
+  --threads 8 \
+  --save
 ```
 
-### FMI open S3
+Подробные проверки и расшифровка каждого шага находятся в [руководстве оператора](docs/operations-guide.md).
+
+## 🧠 Модель `MRL-PhysEvolution`
+
+Модель явно разделяет перенос и эволюцию радиоэха:
+
+```text
+reflectivity + effective quality mask + range_norm
+                         │
+                         ▼
+                lightweight encoder
+                         │
+                         ▼
+                     ConvGRU
+              ┌──────────┼───────────┐
+              ▼          ▼           ▼
+           Motion    Growth/Decay  Uncertainty
+              └──────────┼───────────┘
+                         ▼
+             differentiable advection
+                         ▼
+              reflectivity forecast
+```
+
+Основной профиль:
+
+```text
+canonical grid          512 × 512
+resolution              1 км
+time step               10 минут
+history                 6 сроков / 60 минут
+forecast                6 сроков / 60 минут
+```
+
+Legacy baseline:
+
+```text
+4 входных + 4 выходных срока по 15 минут
+```
+
+## 🛰️ Источники данных
+
+### Полностью автоматизированные
+
+| Source ID | Данные | Доступ | Скачивание | Train по умолчанию |
+| --- | --- | --- | ---: | ---: |
+| `noaa-aws` | NEXRAD Level II | открытый S3 | ✅ | ✅ |
+| `dwd-open-data` | DBZH ODIM HDF5 | прямой HTTP | ✅ | ✅ для проверенного продукта |
+| `fmi-s3` | ODIM 2.3 HDF5 volumes | открытый S3 | ✅ | ⛔ до отдельного QC |
+| `opera-ord` | ODIM HDF5/BUFR | API + 24h cache | ✅ | ⛔ до per-file QC |
+| `dmi-radar` | volume/pseudo-CAPPI/composite | открытый STAC | ✅ | ⛔ до отдельного QC |
+| `knmi-radar` | polarimetric HDF5 | API key | ✅ | ⛔ до отдельного QC |
+| `wis2-cache` | BUFR/GRIB/NetCDF | открытый S3 | ✅ | ⛔ до проверки набора |
+
+### Probe-only или ручной доступ
+
+```text
+WMO Weather Radar Database
+Météo-France Package Radar
+CEDA NIMROD
+MeteoSwiss
+GeoSphere Austria
+AURA/NCI
+MetService
+Taiwan QPESUMS
+NASA GPM-GV
+ЦАО NCRadar
+```
+
+Список и режимы доступа:
 
 ```bash
-python mrl.py download \
-  --source fmi \
-  --prefix '<prefix>' \
-  --count 100
+python mrl.py sources --action list
 ```
 
-### OPERA ORD 24-hour cache
+Инструкция регистрации:
 
 ```bash
-python mrl.py download \
-  --source opera \
-  --prefix '<country/station/prefix>' \
-  --count 100
+python mrl.py sources \
+  --action info \
+  --source knmi-radar
 ```
 
-### DMI radar API
+Безопасная настройка ключа:
 
 ```bash
-python mrl.py download \
-  --source dmi \
-  --station 06194 \
-  --collection volume \
-  --date 2026-07-19 \
-  --count 100
+python mrl.py sources \
+  --action configure \
+  --source knmi-radar
 ```
 
-### KNMI Open Data API
+Секрет сохраняется вне репозитория:
 
-```bash
-python mrl.py download \
-  --source knmi \
-  --dataset-name radar_volume_full_herwijnen \
-  --dataset-version 1.0 \
-  --count 100
+```text
+~/.config/mrl_forecast/credentials.json
 ```
 
-### WIS2 Global Cache
+с правами `0600`.
 
-```bash
-python mrl.py download \
-  --source wis2 \
-  --prefix '<verified-WIS2-prefix>' \
-  --count 20
-```
+## 🛡️ Контракт качества данных
 
-Новые downloader-адаптеры создают стандартный `raw_data` archive:
-
-- исходные файлы без изменения;
-- URL и remote file ID;
-- timestamp UTC;
-- формат и access profile;
-- размер и SHA-256;
-- ошибки отдельных файлов;
-- запись в SQLite-каталоге.
-
-## Quality-маски
-
-Формат `npz-radar-quality-v2` содержит:
+Формат `npz-radar-quality-v2`:
 
 ```text
 reflectivity           [T,H,W]  dBZ
@@ -233,110 +208,135 @@ timestamps_utc         [T]
 Эффективная область:
 
 ```text
-valid_mask AND coverage_mask AND NOT clutter_mask AND interpolation_weight > 0
+valid_mask
+AND coverage_mask
+AND NOT clutter_mask
+AND interpolation_weight > 0
 ```
 
-Маски проходят через:
+Маски проходят через полный контур:
 
 ```text
 adapter → RadarFrame → dataset → loss/metrics → runtime → UI → NetCDF
 ```
 
-Если источник не предоставляет количественный interpolation weight, используется явно маркированный бинарный fallback по валидности.
+## ⚖️ Выборка и quality gate
 
-## Подготовка датасета
+Train sampler по умолчанию балансирует:
 
-NOAA-профиль `4 + 4` по 15 минут:
-
-```bash
-python mrl.py prepare \
-  --archive-dir data/raw/archive/<NOAA_SESSION> \
-  --seq-len 8 \
-  --grid-profile canonical \
-  --time-step-minutes 15
+```text
+50% dry_valid
+50% сумма echo-классов
 ```
 
-Целевой профиль `6 + 6` по 10 минут:
+Validation и test сохраняют естественное распределение.
 
-```bash
-python mrl.py prepare \
-  --archive-dir data/raw/archive/<ODIM_SESSION> \
-  --seq-len 12 \
-  --grid-profile canonical \
-  --time-step-minutes 10
+Модель публикуется только если:
+
+```text
+model MSE < persistence MSE
+model MSE < global advection MSE
+model MSE < local block-motion MSE
+uniform_field_anomaly == false
 ```
 
-Зарегистрированные ODIM HDF5 архивы используют один Py-ART decoder и общий canonical gridding. Timestamp берётся из download metadata; файловый `mtime` не принимается.
+Отчёт дополнительно содержит:
 
-Новые международные источники по умолчанию не получают автоматический допуск к обучению. Перед использованием требуется проверка полей, единиц, станции, геометрии, quality flags и лицензии.
-
-## Обучение
-
-```bash
-python mrl.py train \
-  --data-dirs data/processed_archive/<DATASET_ID> \
-  --architecture phys-evolution \
-  --input-length 6 \
-  --target-length 6 \
-  --val-split 0.2 \
-  --test-split 0.1 \
-  --batch-size 1 \
-  --epochs 20
+```text
+CSI / POD / FAR
+frequency bias / ETS
+FSS
+max dBZ error
+area bias 20/30/40 dBZ
+motion/growth/decay diagnostics
 ```
 
-Контрольная ConvLSTM запускается с `--architecture convlstm`.
-
-Лучшая эпоха выбирается по validation. Окончательный quality gate выполняется на независимых test-блоках, если архив содержит достаточно временных групп. Для небольших и legacy-наборов metadata явно указывает `validation_fallback`.
-
-Модель должна превзойти:
-
-- persistence;
-- global shift advection;
-- local block motion;
-
-и не иметь uniform-field anomaly.
-
-## Инференс и CPU benchmark
+## 🎛️ Единый CLI
 
 ```bash
-python mrl.py infer \
-  --model-path models/registry/<MODEL_ID> \
-  --source aws \
-  --station KOKX
+python mrl.py --help
+```
+
+Команды:
+
+```text
+doctor       проверка окружения
+sources      список, регистрация, probe и sample-download
+download     загрузка открытого архива
+prepare      canonical dataset
+train        ConvLSTM или MRL-PhysEvolution
+infer        терминальный прогноз
+catalog      SQLite-каталог наблюдений
+benchmark    CPU p50/p95 и RAM
+serve        веб-интерфейс
+worker       локальная очередь заданий
+```
+
+## 🗂️ Основные каталоги
+
+```text
+data/raw/archive/          исходные файлы и metadata
+data/processed_archive/    quality-aware datasets
+data/predictions/          результаты CLI-инференса
+data/exports/              NetCDF
+models/registry/           модели и quality gate
+models/checkpoints/        служебные checkpoints
+data/radar_catalog.sqlite3 каталог наблюдений
+```
+
+## ✅ Проверки кода
+
+```bash
+python -m py_compile mrl.py
+python -m compileall -q src scripts tests
+
+for file in scripts/*.sh; do
+  bash -n "$file"
+done
+
+node --check src/static/app.js
+node --check src/static/source-health.js
+
+python -m unittest \
+  tests.test_source_access \
+  tests.test_metadata_access
+```
+
+Полный набор:
+
+```bash
+python -m unittest discover -s tests -p 'test_*.py'
+```
+
+## 🇷🇺 Российские ДМРЛ
+
+Подтверждённого открытого долговременного архива сырых российских ДМРЛ-BUFR пока нет.
+
+Используются:
+
+```text
+WIS2 discovery и Global Cache
++ профиль официального запроса ncradar-cao
 ```
 
 ```bash
-python mrl.py benchmark \
-  --model-path models/registry/<MODEL_ID> \
-  --threads 8 \
-  --warmup 1 \
-  --repeats 5 \
-  --save
+python mrl.py sources \
+  --action info \
+  --source ncradar-cao
 ```
 
-## Российские ДМРЛ
+Meteoinfo и RainViewer остаются visual-only и не преобразуются в фиктивный количественный `dBZ`.
 
-Подтверждённого открытого долговременного архива сырых российских ДМРЛ-BUFR пока нет. WIS2 используется для discovery, а Meteoinfo и RainViewer остаются visual-only.
+## ⚠️ Ограничения
 
-`ncradar-cao` хранит порядок официального запроса в ЦАО. Российский источник получит `training_allowed` только после проверки:
-
-- реального файла или открытого endpoint;
-- единиц отражаемости;
-- времени наблюдения;
-- геометрии и координат;
-- масок покрытия и QC;
-- условий использования.
-
-## Ограничения
-
-- Выход — отражаемость `dBZ`, а не QPE.
+- Выход модели — отражаемость `dBZ`, а не QPE.
 - `MRL-PhysEvolution` — physics-guided nowcasting model, не полная атмосферная PINN.
 - Прогноз инициации новой конвекции без спутника, молний и NWP ограничен.
 - Горизонты более 60 минут по одной отражаемости имеют пониженную достоверность.
-- Доступность источника не равна научной пригодности данных.
-- Визуальные тайлы не используются для количественного обучения.
-- ONNX/ONNX Runtime и квантизация ещё не включены в рабочий контур.
+- Доступность endpoint не означает научную пригодность данных.
+- Визуальные тайлы не допускаются к количественному обучению.
+- Production WSGI, ONNX Runtime и квантизация пока не завершены.
 
-## Лицензия
+## 📄 Лицензия
 
 MIT License
