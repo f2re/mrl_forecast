@@ -1,30 +1,53 @@
 #!/bin/bash
 
-# Скрипт для начальной настройки проекта:
-# создание виртуального окружения, установка зависимостей и подготовка папок.
+# Базовая настройка MRL Forecast:
+# проверка Python, создание виртуального окружения, установка зависимостей
+# и подготовка рабочих каталогов.
 
-set -e # Остановка при любой ошибке
+set -euo pipefail
+
+PYTHON_BIN=${PYTHON_BIN:-python3}
+
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+    echo "Ошибка: $PYTHON_BIN не найден. Установите Python 3.10 или новее."
+    exit 1
+fi
+
+"$PYTHON_BIN" - <<'PY'
+import sys
+if sys.version_info < (3, 10):
+    raise SystemExit(
+        f"Требуется Python >= 3.10, обнаружен {sys.version.split()[0]}"
+    )
+print(f"Python: {sys.version.split()[0]}")
+PY
 
 echo "=== Настройка проекта MRL Forecast ==="
 
-# 1. Создание виртуального окружения, если оно не существует
 if [ ! -d "venv" ]; then
     echo "Создание виртуального окружения venv..."
-    python3 -m venv venv
+    "$PYTHON_BIN" -m venv venv
 else
     echo "Виртуальное окружение venv уже существует."
 fi
 
-# 2. Активация venv и установка зависимостей
-echo "Установка зависимостей из requirements.txt..."
 source venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements.txt
 
-# 3. Создание необходимых директорий для данных и моделей
-echo "Создание структуры директорий..."
-mkdir -p data/raw/archive
-mkdir -p data/processed_archive
-mkdir -p models/real_checkpoints
+mkdir -p \
+    data/raw/archive \
+    data/processed_archive \
+    data/processed \
+    data/predictions \
+    data/exports \
+    data/source_samples \
+    data/logs \
+    models/registry \
+    models/checkpoints \
+    src/static
 
+echo "Каталоги данных и моделей подготовлены."
+echo "Проверка окружения: python mrl.py doctor"
+echo "Запуск интерфейса: bash scripts/run_app.sh"
 echo "=== Настройка завершена успешно ==="
